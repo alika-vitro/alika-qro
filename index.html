@@ -30,11 +30,20 @@ a{color:var(--pri)}
 .topbar .brand{font-weight:800;font-size:1.25rem;color:var(--pri);letter-spacing:.5px}
 .topbar .sede{background:var(--pribg);color:var(--pri);border-radius:999px;padding:4px 12px;font-size:.9rem;font-weight:600}
 .topbar .grow{flex:1}
+body{border-top:6px solid var(--sede,#1f4e52)}
+.topbar.sedebar{background:var(--sede);color:#fff;border-radius:16px;padding:8px 12px}
+.topbar.sedebar .brand{color:#fff}
+.topbar.sedebar .sede{background:rgba(255,255,255,.2);color:#fff;font-size:1rem}
+.topbar.sedebar .pill{background:rgba(255,255,255,.92)}
+.sedesel{display:flex;background:rgba(0,0,0,.18);border-radius:12px;padding:3px;gap:3px;flex-wrap:wrap}
+.sedesel button{border:0;background:transparent;color:#fff;font-weight:700;min-height:44px;padding:6px 14px;border-radius:9px;cursor:pointer;font-size:.95rem}
+.sedesel button.on{background:#fff;color:var(--c)}
+.sedetag{display:inline-block;border-radius:6px;padding:1px 7px;font-size:.78rem;font-weight:800;color:#fff;background:var(--c,#666)}
 .bnav{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);display:flex;z-index:30;padding-bottom:env(safe-area-inset-bottom)}
 .bnav button{flex:1;border:0;background:none;padding:8px 2px 10px;min-height:64px;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:.8rem;color:var(--muted);cursor:pointer}
 .bnav button .ic{font-size:1.5rem;line-height:1}
 .bnav button.on{color:var(--pri);font-weight:700}
-.bnav button.sell{color:#fff;background:var(--acc);border-radius:16px;margin:6px 4px;min-height:56px;font-weight:800}
+.bnav button.sell{color:#fff;background:var(--sede,var(--acc));border-radius:16px;margin:6px 4px;min-height:56px;font-weight:800}
 @media (min-width:1100px){
   .side{display:flex;flex-direction:column;width:230px;background:#fff;border-right:1px solid var(--line);padding:14px 10px;position:sticky;top:0;height:100vh;overflow:auto;gap:4px}
   .side .brand{font-weight:800;font-size:1.4rem;color:var(--pri);padding:6px 10px 14px}
@@ -170,11 +179,14 @@ table.t tr.click:hover{background:#faf6ef}
    ALIKA · Inventario y Ventas — app de un solo archivo (sin dependencias)
    Datos en IndexedDB del navegador. Respaldo portátil en .json
    ========================================================================= */
-const APP_VERSION = '1.0.0';
-const VERSION_ESQUEMA = 1;
+const APP_VERSION = '1.1.0';
+const VERSION_ESQUEMA = 2;   // v2: varias sedes en un mismo equipo
 const DB_NAME = 'alika_inventario';
 const STORES = ['config','productos','variantes','movimientos','eventos','gastos','cortes','precios_ref'];
 const LIST_STORES = STORES.filter(s => s !== 'config');
+const SEDE_STORES = ['movimientos','eventos','gastos','cortes'];   // registros que pertenecen a una sede
+const TODAS = 'TODAS';
+const SEDES_DEFAULT = [{codigo:'QRO', nombre:'Querétaro', color:'#1f4e52'}, {codigo:'MID', nombre:'Mérida', color:'#8a3a62'}];
 
 const CATEGORIAS = ['Aretes','Dijes','Anillos','Pulseras','Juegos','Collares','Otros'];
 const CAT_GASTO = ['Lugar / cuota','Transporte','Empaque y bolsas','Exhibidores y mobiliario','Personal','Comisiones de tarjeta','Publicidad','Comida','Otros'];
@@ -182,7 +194,7 @@ const TIPOS_EVENTO = ['Feria','Mercadito','Venta digital','Otro'];
 const ESTADOS_EVENTO = ['Planeado','Activo','Cerrado'];
 const METODOS = ['Efectivo','Tarjeta','Transferencia'];
 const UBICACIONES = ['Stand','Casa'];
-const TIPO_MOV_TXT = {ENTRADA:'Entrada',VENTA:'Venta',DEVOLUCION:'Devolución a Alika',AJUSTE:'Ajuste',CAMBIO:'Cambio',CONSUMO_PROPIO:'Consumo propio',TRASPASO:'Traspaso'};
+const TIPO_MOV_TXT = {ENTRADA:'Entrada',VENTA:'Venta',DEVOLUCION:'Devolución a Alika',AJUSTE:'Ajuste',CAMBIO:'Cambio',CONSUMO_PROPIO:'Consumo propio',TRASPASO:'Traspaso Stand/Casa',TRASPASO_SEDE:'Traspaso entre sedes'};
 const CAT_ICON = {Aretes:'💎',Dijes:'🔶',Anillos:'💍',Pulseras:'📿',Juegos:'🎁',Collares:'📿',Otros:'✨'};
 
 /* ---------------- utilidades ---------------- */
@@ -230,8 +242,8 @@ function groupBy(arr, f){ const m = new Map(); for (const x of arr){ const k = f
 let _db = null;
 function openDB(){
   return new Promise((res, rej) => {
-    const rq = indexedDB.open(DB_NAME, 1);
-    rq.onupgradeneeded = () => { const db = rq.result; for (const s of STORES) if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, {keyPath:'id'}); };
+    const rq = indexedDB.open(DB_NAME, 2);
+    rq.onupgradeneeded = () => { const db = rq.result; for (const s of [...STORES, 'meta']) if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, {keyPath:'id'}); };
     rq.onsuccess = () => { _db = rq.result; res(_db); };
     rq.onerror = () => rej(rq.error);
   });
@@ -247,10 +259,19 @@ function getAll(store){ return new Promise((res, rej) => { const rq = _db.transa
 
 /* ---------------- Estado en memoria ---------------- */
 const DEFAULT_CONFIG = {
-  id:'config', sede_codigo:'QRO', sede_nombre:'Querétaro', responsable:'', factor_precio_sugerido:2.0, moneda:'MXN',
-  comision_tarjeta_pct:0, umbral_existencia_baja:1, ultimo_respaldo:null, evento_activo_id:null,
+  id:'config', sedes:SEDES_DEFAULT.map(x => ({...x})), sede_activa:'QRO', eventos_activos:{}, responsable:'', factor_precio_sugerido:2.0, moneda:'MXN',
+  comision_tarjeta_pct:0, umbral_existencia_baja:1, ultimo_respaldo:null,
   personas:['Familia'], lista_casa:[], instalado:nowISO(), historial_importado:false
 };
+/* ---- sedes ---- */
+const vista = () => S.config.sede_activa || 'QRO';
+const esTodas = () => vista() === TODAS;
+const sedes = () => (S.config.sedes && S.config.sedes.length) ? S.config.sedes : SEDES_DEFAULT;
+const sedesCodigos = () => { const set = new Set(sedes().map(x => x.codigo)); for (const k of SEDE_STORES) for (const r of S[k]) if (r.sede_codigo && r.sede_codigo !== TODAS) set.add(r.sede_codigo); return [...set]; };
+function sedeInfo(c){ if (c === TODAS) return {codigo:TODAS, nombre:'Todas las sedes', color:'#4a4f55'}; return sedes().find(x => x.codigo === c) || {codigo:c, nombre:c, color:'#666'}; }
+const sedeNombre = c => sedeInfo(c).nombre;
+const enSede = (r, sede = vista()) => sede === TODAS || r.sede_codigo === sede;
+function precioVenta(p, sede = vista()){ const o = p && p.precios_sede && num(p.precios_sede[sede]); return o > 0 ? o : num(p && p.precio_venta); }
 const S = { config:{...DEFAULT_CONFIG} };
 for (const s of LIST_STORES) S[s] = [];
 const IDX = { prod:new Map(), vari:new Map(), ev:new Map(), varsByProd:new Map() };
@@ -267,15 +288,21 @@ async function loadAll(){
   for (const s of LIST_STORES) S[s] = await getAll(s);
   const cfg = (await getAll('config')).find(c => c.id === 'config');
   S.config = {...DEFAULT_CONFIG, ...(cfg || {})};
-  if (!cfg) await saveConfig();
+  if (!cfg){ S.config.esquema = VERSION_ESQUEMA; await saveConfig(); }
   S.movimientos.sort((a,b) => a.fecha_hora < b.fecha_hora ? -1 : 1);
   reindex();
 }
 async function saveConfig(patch){ if (patch) Object.assign(S.config, patch); await tx(['config'],'readwrite', t => t.objectStore('config').put(S.config)); }
-function stamp(r){ const n = nowISO(); if (!r.id) r.id = uuid(); if (!r.creado) r.creado = n; r.actualizado = n; if (!r.sede_codigo) r.sede_codigo = S.config.sede_codigo; return r; }
+/* sello de cada registro. Lo que pertenece a una sede (movimientos, eventos, gastos, cortes) se registra en la sede activa;
+   con "Todas" seleccionada no se puede registrar nada nuevo (se lanza error antes de escribir). */
+function stamp(r, store){
+  const n = nowISO(); if (!r.id) r.id = uuid(); if (!r.creado) r.creado = n; r.actualizado = n;
+  if (SEDE_STORES.includes(store) && !r.sede_codigo){ if (esTodas()) throw new Error('Elige una sede para registrar.'); r.sede_codigo = vista(); }
+  return r;
+}
 /* guarda varios registros (y los agrega/actualiza en memoria) en una sola transacción */
 async function put(store, recs){
-  recs = Array.isArray(recs) ? recs : [recs]; recs.forEach(stamp);
+  recs = Array.isArray(recs) ? recs : [recs]; recs.forEach(r => stamp(r, store));
   await tx([store],'readwrite', t => { const os = t.objectStore(store); for (const r of recs) os.put(r); });
   const arr = S[store]; const pos = new Map(arr.map((x,i) => [x.id,i]));
   for (const r of recs){ if (pos.has(r.id)) arr[pos.get(r.id)] = r; else arr.push(r); }
@@ -285,7 +312,7 @@ async function put(store, recs){
 async function putMany(map){ // {store:[recs]} todo en una transacción
   const stores = Object.keys(map).filter(k => map[k].length);
   if (!stores.length) return;
-  for (const k of stores) map[k].forEach(stamp);
+  for (const k of stores) map[k].forEach(r => stamp(r, k));
   await tx(stores,'readwrite', t => { for (const k of stores){ const os = t.objectStore(k); for (const r of map[k]) os.put(r); } });
   for (const k of stores){ const arr = S[k]; const pos = new Map(arr.map((x,i) => [x.id,i])); for (const r of map[k]){ if (pos.has(r.id)) arr[pos.get(r.id)] = r; else arr.push(r); } }
   S.movimientos.sort((a,b) => a.fecha_hora < b.fecha_hora ? -1 : 1);
@@ -299,7 +326,7 @@ async function del(store, ids){
 async function clearAll(){
   await tx(STORES,'readwrite', t => { for (const s of STORES) t.objectStore(s).clear(); });
   for (const s of LIST_STORES) S[s] = [];
-  S.config = {...DEFAULT_CONFIG, instalado:nowISO()}; await saveConfig(); reindex();
+  S.config = {...DEFAULT_CONFIG, sedes:sedes().map(x => ({...x})), instalado:nowISO(), esquema:VERSION_ESQUEMA}; await saveConfig(); reindex();
 }
 
 /* ---------------- Reglas de negocio ---------------- */
@@ -308,7 +335,7 @@ function delta(m){
   switch (m.tipo){
     case 'ENTRADA': return num(m.cantidad);
     case 'VENTA': case 'DEVOLUCION': case 'CONSUMO_PROPIO': return -num(m.cantidad);
-    case 'AJUSTE': case 'CAMBIO': return num(m.cantidad); // con signo
+    case 'AJUSTE': case 'CAMBIO': case 'TRASPASO_SEDE': return num(m.cantidad); // con signo
     default: return 0; // TRASPASO no cambia el total
   }
 }
@@ -322,25 +349,33 @@ const esVentaMov = m => m.tipo === 'VENTA' || m.tipo === 'CONSUMO_PROPIO' || m.t
 function ventaLinea(m){ return vendidas(m) * num(m.precio_venta_unit) - num(m.descuento); }
 function fabLinea(m){ return vendidas(m) * num(m.precio_fabricante_unit); }
 
+/* existencia por sede: llave "SEDE|variante" */
 function stockMap(){
   if (_stock) return _stock;
   const st = new Map();
-  const g = id => { if (!st.has(id)) st.set(id, {total:0, Stand:0, Casa:0}); return st.get(id); };
+  const g = (sede, id) => { const k = sede + '|' + id; if (!st.has(k)) st.set(k, {total:0, Stand:0, Casa:0}); return st.get(k); };
   for (const m of S.movimientos){
-    const s = g(m.variante_id); const d = delta(m); const u = m.ubicacion || 'Stand';
+    const s = g(m.sede_codigo, m.variante_id); const d = delta(m); const u = m.ubicacion || 'Stand';
     s.total += d; s[u] = (s[u] || 0) + d;
     if (m.tipo === 'TRASPASO'){ const q = num(m.cantidad); s[u] -= q; s[m.ubicacion_destino || 'Casa'] += q; }
   }
   _stock = st; return st;
 }
-const stockOf = vid => (stockMap().get(vid) || {total:0, Stand:0, Casa:0});
-function stockProd(pid){ return sum(IDX.varsByProd.get(pid) || [], v => stockOf(v.id).total); }
+function stockOf(vid, sede = vista()){
+  const st = stockMap();
+  if (sede !== TODAS){ const x = st.get(sede + '|' + vid); return x ? {...x} : {total:0, Stand:0, Casa:0}; }
+  const r = {total:0, Stand:0, Casa:0};
+  for (const c of sedesCodigos()){ const x = st.get(c + '|' + vid); if (x){ r.total += x.total; r.Stand += x.Stand; r.Casa += x.Casa; } }
+  return r;
+}
+function stockProd(pid, sede = vista()){ return sum(IDX.varsByProd.get(pid) || [], v => stockOf(v.id, sede).total); }
 const prodOfVar = vid => IDX.prod.get(IDX.vari.get(vid)?.producto_id);
 function varLabel(vid){ const v = IDX.vari.get(vid); const p = v && IDX.prod.get(v.producto_id); return p ? `${p.nombre} · ${v.color}` : '(variante borrada)'; }
 
-function inventarioTotales(){
+function inventarioTotales(sede = vista()){
+  if (sede === TODAS){ const t = {piezas:0, valor:0, valorVenta:0}; for (const c of sedesCodigos()){ const x = inventarioTotales(c); t.piezas += x.piezas; t.valor += x.valor; t.valorVenta += x.valorVenta; } return t; }
   let piezas = 0, valor = 0, valorVenta = 0;
-  for (const v of S.variantes){ const p = IDX.prod.get(v.producto_id); if (!p) continue; const q = stockOf(v.id).total; piezas += q; valor += q * num(p.precio_fabricante); valorVenta += q * num(p.precio_venta); }
+  for (const v of S.variantes){ const p = IDX.prod.get(v.producto_id); if (!p) continue; const q = stockOf(v.id, sede).total; piezas += q; valor += q * num(p.precio_fabricante); valorVenta += q * precioVenta(p, sede); }
   return {piezas, valor, valorVenta};
 }
 function bajasExistencia(){
@@ -350,9 +385,10 @@ function bajasExistencia(){
 
 /* Estado de resultados. f = {evento_id, desde, hasta, soloEvento:boolean} */
 function resultados(f = {}){
+  const sede = f.sede || (f.evento_id ? TODAS : vista());
   const inRange = d => (!f.desde || d >= f.desde) && (!f.hasta || d <= f.hasta);
-  const movs = S.movimientos.filter(m => esVentaMov(m) && (!f.evento_id || m.evento_id === f.evento_id) && inRange(dayOf(m.fecha_hora)));
-  const gastos = S.gastos.filter(g => (!f.evento_id || g.evento_id === f.evento_id) && inRange(g.fecha));
+  const movs = S.movimientos.filter(m => esVentaMov(m) && enSede(m, sede) && (!f.evento_id || m.evento_id === f.evento_id) && inRange(dayOf(m.fecha_hora)));
+  const gastos = S.gastos.filter(g => enSede(g, sede) && (!f.evento_id || g.evento_id === f.evento_id) && inRange(g.fecha));
   const r = {movs, gastosList:gastos, ventaLista:0, descuentos:0, venta:0, fab:0, piezas:0, comisiones:0,
     consumo:{venta:0, piezas:0, fab:0}, porMetodo:{}, gastosCat:{}, gastos:0, tickets:new Set()};
   for (const m of movs){
@@ -376,7 +412,77 @@ function resultados(f = {}){
   return r;
 }
 function eventoDias(e){ if (!e.fecha_inicio) return 1; return Math.max(1, daysBetween(e.fecha_inicio, e.fecha_fin || e.fecha_inicio) + 1); }
-function eventoActivo(){ const e = IDX.ev.get(S.config.evento_activo_id); return e && e.estado !== 'Cerrado' ? e : null; }
+function eventoActivo(sede = vista()){ if (sede === TODAS) return null; const e = IDX.ev.get((S.config.eventos_activos || {})[sede]); return e && e.estado !== 'Cerrado' && e.sede_codigo === sede ? e : null; }
+async function setEventoActivo(sede, id){ await saveConfig({eventos_activos:{...(S.config.eventos_activos || {}), [sede]:id || null}}); }
+
+/* ---------------- Cortes con Alika ---------------- */
+/* ventas y devoluciones que todavía no están en un corte, por periodo y sede (o TODAS = corte en conjunto) */
+function pendientesCorte(alcance, desde, hasta){
+  const inR = m => (!desde || dayOf(m.fecha_hora) >= desde) && (!hasta || dayOf(m.fecha_hora) <= hasta);
+  const base = S.movimientos.filter(m => !m.corte_id && enSede(m, alcance) && inR(m));
+  return {ventas: base.filter(esVentaMov), devoluciones: base.filter(m => m.tipo === 'DEVOLUCION')};
+}
+async function generarCorte({alcance, desde, hasta, nota = '', folio = null}){
+  const {ventas, devoluciones} = pendientesCorte(alcance, desde, hasta);
+  if (!ventas.length && !devoluciones.length) throw new Error('No hay ventas ni devoluciones pendientes en ese periodo.');
+  const id = uuid();
+  const corte = {id, sede_codigo:alcance, fecha_corte:nowISO(), periodo_desde:desde || '', periodo_hasta:hasta || '',
+    movimiento_ids:ventas.map(m => m.id), devolucion_ids:devoluciones.map(m => m.id),
+    piezas:sum(ventas, vendidas), venta_total:r2(sum(ventas, ventaLinea)), total_a_pagar_fabricante:r2(sum(ventas, fabLinea)),
+    piezas_devueltas:sum(devoluciones, m => m.cantidad), valor_devuelto:r2(sum(devoluciones, m => num(m.cantidad) * num(m.precio_fabricante_unit))),
+    estado:'Pendiente', fecha_pago:null, referencia:'', nota, folio: folio || 'C-' + String(S.cortes.length + 1).padStart(3, '0')};
+  await putMany({cortes:[corte], movimientos:[...ventas, ...devoluciones].map(m => ({...m, corte_id:id}))});
+  return corte;
+}
+async function pagarCorte(id, fecha_pago, referencia){
+  const c = S.cortes.find(x => x.id === id); if (!c) throw new Error('No existe el corte.');
+  await put('cortes', {...c, estado:'Pagado', fecha_pago, referencia});
+}
+async function cancelarCorte(id){
+  const c = S.cortes.find(x => x.id === id); if (!c) return;
+  if (c.estado === 'Pagado') throw new Error('Un corte pagado no se puede cancelar.');
+  const movs = S.movimientos.filter(m => m.corte_id === id).map(m => { const x = {...m}; delete x.corte_id; return x; });
+  if (movs.length) await put('movimientos', movs);
+  await del('cortes', id);
+}
+const corteDe = m => m.corte_id ? S.cortes.find(c => c.id === m.corte_id) : null;
+
+/* ---------------- Migración de esquema v1 → v2 ---------------- */
+/* v1 = una sede por equipo. v2 = varias sedes. Todo lo de v1 queda en QRO (salvo registros que ya digan MID). */
+function migrarSnapshot(o){
+  const v = num(o.version_esquema) || 1;
+  if (v >= 2) return o;
+  const data = {};
+  for (const s of LIST_STORES) data[s] = (o.data[s] || []).map(r => SEDE_STORES.includes(s) ? {...r, sede_codigo: r.sede_codigo === 'MID' ? 'MID' : 'QRO'} : {...r});
+  const c0 = o.config || {};
+  const sedesCfg = SEDES_DEFAULT.map(x => ({...x}));
+  const config = {...c0, sedes:sedesCfg, sede_activa:'QRO', eventos_activos: c0.evento_activo_id ? {QRO:c0.evento_activo_id} : {}, esquema:2};
+  delete config.sede_codigo; delete config.sede_nombre; delete config.evento_activo_id;
+  return {...o, version_esquema:2, migrado_de:v, alcance:TODAS, sedes:['QRO','MID'], config, data};
+}
+/* migra lo que ya está guardado en este equipo; antes guarda un respaldo automático (archivo + copia interna) */
+async function migrarLocal(){
+  if ((num(S.config.esquema) || 1) >= VERSION_ESQUEMA) return null;
+  const hayDatos = LIST_STORES.some(s => S[s].length);
+  const cfgV1 = {...S.config}; delete cfgV1.sedes; delete cfgV1.sede_activa; delete cfgV1.eventos_activos;
+  const snapV1 = {app:'alika-inventario', version_esquema:1, app_version:'1.0.0', sede_codigo:cfgV1.sede_codigo || 'QRO', sede_nombre:cfgV1.sede_nombre || 'Querétaro', generado:nowISO(), config:cfgV1, data:{}};
+  for (const s of LIST_STORES) snapV1.data[s] = S[s];
+  let archivo = null;
+  if (hayDatos){
+    const txt = JSON.stringify(snapV1);
+    await tx(['meta'],'readwrite', t => t.objectStore('meta').put({id:'premigracion_v1', fecha:nowISO(), json:txt}));
+    const d = new Date(); archivo = `ALIKA_ANTES_DE_MIGRAR_v1_${localDate(d)}_${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+    try { download(archivo, txt, 'application/json'); } catch(e){}
+  }
+  const m = migrarSnapshot(snapV1);
+  await tx(STORES,'readwrite', t => {
+    for (const s of SEDE_STORES){ const os = t.objectStore(s); for (const r of m.data[s]) os.put(r); }
+    t.objectStore('config').put({...DEFAULT_CONFIG, ...m.config, id:'config'});
+  });
+  await loadAll();
+  return {hayDatos, archivo, registros: sum(LIST_STORES, s => S[s].length)};
+}
+async function respaldoPremigracion(){ return new Promise(res => { const rq = _db.transaction('meta').objectStore('meta').get('premigracion_v1'); rq.onsuccess = () => res(rq.result || null); rq.onerror = () => res(null); }); }
 
 /* ---------------- Lector de Excel (.xlsx) y CSV sin librerías ---------------- */
 async function unzip(buf){
@@ -559,9 +665,11 @@ function leerCasa(sheet){ return sheet.rows.flatMap(r => r.filter(v => typeof v 
 
 /* aplica la importación: crea productos, variantes, movimientos de ENTRADA, y opcionalmente historial */
 async function aplicarImport(an, opt = {}){
-  const sede = S.config.sede_codigo;
+  const sede = opt.sede || vista();
+  if (!sede || sede === TODAS) throw new Error('Elige a qué sede se carga el inventario.');
   const existentes = new Map(S.productos.map(p => [`${p.clave}|${p.nombre}|${p.precio_fabricante}`, p]));
-  const varExist = new Set(S.variantes.map(v => `${v.producto_id}|${v.color}`));
+  const varExist = new Map(S.variantes.map(v => [`${v.producto_id}|${v.color}`, v.id]));
+  const conMovs = new Set(S.movimientos.filter(m => m.sede_codigo === sede).map(m => m.variante_id)); // ya cargadas en esta sede
   const productos = [], variantes = [], movs = [], eventos = [], gastos = [];
   const evIds = {};
   const fechaCarga = opt.fechaCarga || localDate();
@@ -581,16 +689,16 @@ async function aplicarImport(an, opt = {}){
     const v0 = vs[0];
     let p = existentes.get(key);
     if (!p){
-      p = {id:uuid(), sede_codigo:sede, clave:v0.clave, nombre:v0.nombre, categoria:v0.categoria, precio_fabricante:v0.costo,
+      p = {id:uuid(), clave:v0.clave, nombre:v0.nombre, categoria:v0.categoria, precio_fabricante:v0.costo,
         precio_sugerido:v0.sugerido, precio_venta:v0.sugerido, foto:'', activo:true, revisar:v0.revisar,
         desglose:v0.desglose, nota:[...new Set(vs.map(v => v.nota).filter(Boolean))].join(' · ')};
       productos.push(p); existentes.set(key, p);
     }
     for (const v of vs){
-      if (varExist.has(`${p.id}|${v.color}`)){ saltadas++; continue; }
-      varExist.add(`${p.id}|${v.color}`);
-      const vid = uuid();
-      variantes.push({id:vid, sede_codigo:sede, producto_id:p.id, color:v.color, activo:true, fila_origen:v.fila});
+      let vid = varExist.get(`${p.id}|${v.color}`);
+      if (vid && conMovs.has(vid)){ saltadas++; continue; }   // esa variante ya tiene inventario en esta sede
+      if (!vid){ vid = uuid(); varExist.set(`${p.id}|${v.color}`, vid); variantes.push({id:vid, producto_id:p.id, color:v.color, activo:true, fila_origen:v.fila}); }
+      conMovs.add(vid);
       const vendidasHist = opt.historial ? v.hist.length : 0;
       const qEntrada = v.piezas + vendidasHist;
       if (qEntrada > 0) movs.push({id:uuid(), sede_codigo:sede, fecha_hora:new Date(fechaEntrada + 'T09:00').toISOString(), tipo:'ENTRADA', variante_id:vid, producto_id:p.id, cantidad:qEntrada, ubicacion:'Stand',
@@ -610,27 +718,29 @@ async function aplicarImport(an, opt = {}){
   if (opt.historial && eventos.length) patch.historial_importado = true;
   if (opt.persona && !S.config.personas.includes(opt.persona)) patch.personas = [...S.config.personas, opt.persona];
   if (Object.keys(patch).length) await saveConfig(patch);
-  return {productos:productos.length, variantes:variantes.length, movimientos:movs.length, eventos:eventos.length, gastos:gastos.length, saltadas};
+  return {sede, productos:productos.length, variantes:variantes.length, movimientos:movs.length, eventos:eventos.length, gastos:gastos.length, saltadas};
 }
 
 /* ---------------- Respaldo ---------------- */
-function snapshot(){
-  const data = {}; for (const s of LIST_STORES) data[s] = S[s];
-  return {app:'alika-inventario', version_esquema:VERSION_ESQUEMA, app_version:APP_VERSION, sede_codigo:S.config.sede_codigo, sede_nombre:S.config.sede_nombre,
-    generado:nowISO(), config:S.config, data};
+/* alcance = TODAS (todas las sedes) o el código de una sede (catálogo completo + solo los registros de esa sede) */
+function snapshot(alcance = TODAS){
+  const data = {};
+  for (const s of LIST_STORES) data[s] = (SEDE_STORES.includes(s) && alcance !== TODAS) ? S[s].filter(r => r.sede_codigo === alcance) : S[s];
+  return {app:'alika-inventario', version_esquema:VERSION_ESQUEMA, app_version:APP_VERSION, alcance,
+    sedes: alcance === TODAS ? sedesCodigos() : [alcance], sede_nombre: sedeNombre(alcance), generado:nowISO(), config:S.config, data};
 }
-function nombreRespaldo(){ const d = new Date(); return `ALIKA_${S.config.sede_codigo}_${localDate(d)}_${pad(d.getHours())}${pad(d.getMinutes())}.json`; }
-async function guardarRespaldo(share = false){
-  const snap = snapshot(); const name = nombreRespaldo();
+function nombreRespaldo(alcance = TODAS){ const d = new Date(); return `ALIKA_${alcance}_${localDate(d)}_${pad(d.getHours())}${pad(d.getMinutes())}.json`; }
+async function guardarRespaldo(share = false, alcance = TODAS){
+  const snap = snapshot(alcance); const name = nombreRespaldo(alcance);
   const text = JSON.stringify(snap);
   const file = new File([text], name, {type:'application/json'});
   let ok = false;
   if (share && navigator.canShare && navigator.canShare({files:[file]})){
-    try { await navigator.share({files:[file], title:'Respaldo Alika', text:`Respaldo Alika ${S.config.sede_nombre} ${fdt(nowISO())}`}); ok = true; }
+    try { await navigator.share({files:[file], title:'Respaldo Alika', text:`Respaldo Alika (${sedeNombre(alcance)}) ${fdt(nowISO())}`}); ok = true; }
     catch(e){ if (e.name === 'AbortError') return false; }
   }
   if (!ok) download(name, file);
-  await saveConfig({ultimo_respaldo:nowISO()});
+  if (alcance === TODAS) await saveConfig({ultimo_respaldo:nowISO()});
   return true;
 }
 function validarRespaldo(o){
@@ -644,19 +754,22 @@ function validarRespaldo(o){
     for (const r of arr) if (!r || typeof r.id !== 'string') throw new Error(`El respaldo está dañado: hay un registro sin ID en ${s}.`);
   }
   for (const m of o.data.movimientos || []) if (!m.tipo || !m.variante_id) throw new Error('El respaldo está dañado: hay movimientos incompletos.');
+  if (num(o.version_esquema) >= 2) for (const s of SEDE_STORES) for (const r of o.data[s] || []) if (!r.sede_codigo) throw new Error(`El respaldo está dañado: hay registros sin sede en ${s}.`);
   return true;
 }
 async function cargarRespaldo(o, modo){
   validarRespaldo(o);
+  o = migrarSnapshot(o);   // respaldos de la v1 se pasan a QRO automáticamente
   if (modo === 'reemplazar'){
     const cfgLocal = {...S.config};
     await tx(STORES,'readwrite', t => {
       for (const s of LIST_STORES){ const os = t.objectStore(s); os.clear(); for (const r of o.data[s] || []) os.put(r); }
-      const cfg = {...DEFAULT_CONFIG, ...(o.config || {}), id:'config', ultimo_respaldo:cfgLocal.ultimo_respaldo};
+      const cfg = {...DEFAULT_CONFIG, ...(o.config || {}), id:'config', ultimo_respaldo:cfgLocal.ultimo_respaldo, esquema:VERSION_ESQUEMA};
+      if (o.alcance && o.alcance !== TODAS) cfg.sede_activa = o.alcance;
       t.objectStore('config').put(cfg);
     });
     await loadAll();
-    return {modo, total: sum(LIST_STORES, s => (o.data[s] || []).length)};
+    return {modo, total: sum(LIST_STORES, s => (o.data[s] || []).length), migrado: !!o.migrado_de};
   }
   // fusionar: une por UUID; si existe en ambos, gana el más reciente
   let nuevos = 0, actualizados = 0, iguales = 0;
@@ -672,24 +785,28 @@ async function cargarRespaldo(o, modo){
   }
   const stores = LIST_STORES.filter(s => map[s].length);
   if (stores.length) await tx(stores,'readwrite', t => { for (const s of stores){ const os = t.objectStore(s); for (const r of map[s]) os.put(r); } });
-  if (o.config){ const patch = {}; if (o.config.personas) patch.personas = [...new Set([...S.config.personas, ...o.config.personas])]; await saveConfig(patch); }
+  if (o.config){ const patch = {}; if (o.config.personas) patch.personas = [...new Set([...S.config.personas, ...o.config.personas])];
+    const ss = sedes().map(x => ({...x})); for (const x of o.config.sedes || []) if (!ss.some(y => y.codigo === x.codigo)) ss.push({...x}); patch.sedes = ss;
+    await saveConfig(patch); }
   await loadAll();
-  return {modo, nuevos, actualizados, iguales};
+  return {modo, nuevos, actualizados, iguales, migrado: !!o.migrado_de};
 }
 function tablasCSV(){
-  const P = id => IDX.prod.get(id) || {};
+  const P = id => IDX.prod.get(id) || {}; const sc = sedesCodigos();
   const ev = id => IDX.ev.get(id)?.nombre || '';
   return {
-    productos: [['id','sede','clave','nombre','categoria','precio_fabricante','precio_sugerido','precio_venta','activo','existencia','nota'],
-      ...S.productos.map(p => [p.id,p.sede_codigo,p.clave,p.nombre,p.categoria,p.precio_fabricante,p.precio_sugerido,p.precio_venta,p.activo!==false?'sí':'no',stockProd(p.id),p.nota||''])],
-    variantes: [['id','producto_id','clave','producto','color','existencia','stand','casa'],
-      ...S.variantes.map(v => { const s = stockOf(v.id); return [v.id,v.producto_id,P(v.producto_id).clave,P(v.producto_id).nombre,v.color,s.total,s.Stand,s.Casa]; })],
+    productos: [['id','clave','nombre','categoria','precio_fabricante','precio_sugerido','precio_venta', ...sc.map(c => 'precio_venta_' + c),'activo', ...sc.map(c => 'existencia_' + c),'existencia_total','nota'],
+      ...S.productos.map(p => [p.id,p.clave,p.nombre,p.categoria,p.precio_fabricante,p.precio_sugerido,p.precio_venta, ...sc.map(c => precioVenta(p, c)),p.activo!==false?'sí':'no', ...sc.map(c => stockProd(p.id, c)),stockProd(p.id, TODAS),p.nota||''])],
+    variantes: [['id','producto_id','clave','producto','color', ...sc.map(c => 'existencia_' + c),'existencia_total','stand_total','casa_total'],
+      ...S.variantes.map(v => { const s = stockOf(v.id, TODAS); return [v.id,v.producto_id,P(v.producto_id).clave,P(v.producto_id).nombre,v.color, ...sc.map(c => stockOf(v.id, c).total),s.total,s.Stand,s.Casa]; })],
     movimientos: [['id','sede','fecha_hora','tipo','clave','producto','color','cantidad','efecto_existencia','ubicacion','precio_venta_unit','precio_fabricante_unit','descuento','metodo_pago','comision','evento','persona','motivo','nota','corte_id'],
-      ...S.movimientos.map(m => { const v = IDX.vari.get(m.variante_id) || {}; const p = P(m.producto_id); return [m.id,m.sede_codigo,fdt(m.fecha_hora),m.tipo,p.clave,p.nombre,v.color,m.cantidad,delta(m),m.ubicacion+(m.tipo==='TRASPASO'?' → '+m.ubicacion_destino:''),m.precio_venta_unit,m.precio_fabricante_unit,m.descuento||0,m.metodo_pago||'',m.comision||0,ev(m.evento_id),m.persona||'',m.motivo||'',m.nota||'',m.corte_id||'']; })],
+      ...S.movimientos.map(m => { const v = IDX.vari.get(m.variante_id) || {}; const p = P(m.producto_id); return [m.id,m.sede_codigo,fdt(m.fecha_hora),m.tipo,p.clave,p.nombre,v.color,m.cantidad,delta(m),m.ubicacion+(m.tipo==='TRASPASO'?' → '+m.ubicacion_destino:'')+(m.tipo==='TRASPASO_SEDE'?(num(m.cantidad)<0?' → sede '+m.sede_destino:' ← sede '+m.sede_origen):''),m.precio_venta_unit,m.precio_fabricante_unit,m.descuento||0,m.metodo_pago||'',m.comision||0,ev(m.evento_id),m.persona||'',m.motivo||'',m.nota||'',m.corte_id||'']; })],
     eventos: [['id','sede','nombre','tipo','fecha_inicio','fecha_fin','costo_lugar','estado'],
       ...S.eventos.map(e => [e.id,e.sede_codigo,e.nombre,e.tipo,fdate(e.fecha_inicio),fdate(e.fecha_fin),e.costo_lugar||0,e.estado])],
     gastos: [['id','sede','fecha','evento','categoria','monto','descripcion','pagado_por','inversion_inicial'],
       ...S.gastos.map(g => [g.id,g.sede_codigo,fdate(g.fecha),ev(g.evento_id)||'(general)',g.categoria,g.monto,g.descripcion||'',g.pagado_por||'',g.es_inversion_inicial?'sí':'no'])],
+    cortes: [['id','sede','fecha_corte','periodo_desde','periodo_hasta','piezas','venta_total','total_a_pagar_fabricante','piezas_devueltas','valor_devuelto','estado','fecha_pago','referencia'],
+      ...S.cortes.map(c => [c.id,c.sede_codigo === TODAS ? 'Conjunto' : c.sede_codigo,fdt(c.fecha_corte),fdate(c.periodo_desde),fdate(c.periodo_hasta),c.piezas,c.venta_total,c.total_a_pagar_fabricante,c.piezas_devueltas,c.valor_devuelto,c.estado,fdate(c.fecha_pago),c.referencia||''])],
   };
 }
 
@@ -698,7 +815,7 @@ function tablasCSV(){
    ========================================================================= */
 const NAV = [
   ['inicio','🏠','Inicio'],['vender','🛒','Vender'],['inventario','📦','Inventario'],['catalogo','🏷️','Catálogo'],
-  ['eventos','🎪','Eventos'],['gastos','💸','Gastos'],['resultados','📊','Resultados'],['calculadora','🧮','Calculadora'],
+  ['eventos','🎪','Eventos'],['gastos','💸','Gastos'],['resultados','📊','Resultados'],['cortes','🤝','Cortes con Alika'],['calculadora','🧮','Calculadora'],
   ['reportes','🖨️','Reportes'],['respaldo','💾','Respaldo'],['config','⚙️','Configuración']
 ];
 const UI = {
@@ -764,18 +881,40 @@ A.mas = () => {
 function renderNav(){
   const s = UI.screen;
   $('#side').innerHTML = `<div class="brand">Alika ✦</div>` + NAV.map(([k,ic,t]) => `<button class="${s===k?'on':''}" data-a="go" data-s="${k}"><span class="ic">${ic}</span>${t}</button>`).join('') +
-    `<div class="small muted" style="margin-top:auto;padding:10px">Sede ${esc(S.config.sede_nombre)} · v${APP_VERSION}</div>`;
-  const b = [['inicio','🏠','Inicio'],['inventario','📦','Inventario'],['vender','🛒','VENDER'],['gastos','💸','Gastos']];
+    `<div class="small muted" style="margin-top:auto;padding:10px">📍 ${esc(sedeNombre(vista()))} · v${APP_VERSION}</div>`;
+  const b = [['inicio','🏠','Inicio'],['inventario','📦','Inventario'],['vender','🛒', esTodas() ? 'VENDER' : 'VENDER ' + vista()],['gastos','💸','Gastos']];
   const enMas = !b.some(x => x[0] === s);
   $('#bnav').innerHTML = b.map(([k,ic,t]) => `<button class="${k==='vender'?'sell':''} ${s===k?'on':''}" data-a="go" data-s="${k}"><span class="ic">${ic}</span>${t}</button>`).join('') +
     `<button class="${enMas?'on':''}" data-a="mas"><span class="ic">☰</span>Más</button>`;
 }
+function selectorSede(){
+  const cur = vista();
+  return `<div class="sedesel" role="group" aria-label="Sede">${[...sedes(), sedeInfo(TODAS)].map(x => `<button class="${cur === x.codigo ? 'on' : ''}" style="--c:${esc(x.color)}" data-a="setSede" data-v="${esc(x.codigo)}">${x.codigo === TODAS ? '🌐 Todas' : esc(x.nombre)}</button>`).join('')}</div>`;
+}
+const sedeTag = c => { const x = sedeInfo(c); return `<span class="sedetag" style="--c:${esc(x.color)}">${c === TODAS ? 'Conjunto' : esc(x.codigo)}</span>`; };
+function aplicarSedeVisual(){
+  const c = sedeInfo(vista()).color; document.documentElement.style.setProperty('--sede', c);
+  const mt = document.querySelector('meta[name=theme-color]'); if (mt) mt.setAttribute('content', c);
+}
+function requiereSede(){
+  if (!esTodas()) return true;
+  alertDlg('Elige una sede para registrar', 'Con <b>"Todas"</b> seleccionado solo se puede consultar e imprimir reportes. Arriba elige <b>' + sedes().map(x => esc(x.nombre)).join('</b> o <b>') + '</b>.');
+  return false;
+}
+A.setSede = async el => {
+  const v = el.dataset.v; if (v === vista()) return;
+  if (UI.cart.length && !await confirmDlg({titulo:'¿Cambiar de sede?', msg:'Hay piezas en la venta en curso. Si cambias de sede, la venta se vacía.', ok:'Sí, cambiar'})) return;
+  UI.cart = []; UI.desc.v = ''; UI.ultimaVenta = null; UI.consumo = false; UI.rf.ev = ''; UI.gf.ev = '';
+  await saveConfig({sede_activa:v}); aplicarSedeVisual(); closeAll(); render();
+  toast(v === TODAS ? '🌐 Viendo todas las sedes (solo consulta)' : `📍 Ahora registras en ${esc(sedeNombre(v))}`);
+};
 function topbar(titulo){
-  const ev = eventoActivo();
+  const ev = eventoActivo(); const si = sedeInfo(vista());
   const tieneDatos = S.movimientos.length || S.gastos.length;
   const ult = S.config.ultimo_respaldo; const viejo = tieneDatos && (!ult || Date.now() - new Date(ult) > 24*3600000);
-  return `<div class="topbar"><span class="brand">${titulo}</span><span class="sede">${esc(S.config.sede_codigo)} · ${esc(S.config.sede_nombre)}</span>
-    ${ev ? `<span class="pill">🎪 ${esc(ev.nombre)}</span>` : ''}<span class="grow"></span></div>
+  return `<div class="topbar sedebar" style="--sede:${esc(si.color)}"><span class="brand">${titulo}</span><span class="sede">📍 ${esc(si.nombre)}</span>
+    ${ev ? `<span class="pill">🎪 ${esc(ev.nombre)}</span>` : ''}<span class="grow"></span>${selectorSede()}</div>
+    ${esTodas() ? `<div class="banner alert info">🌐 Estás viendo <b>todas las sedes</b>: solo consulta y reportes consolidados. Para registrar, elige una sede arriba.</div>` : ''}
     ${viejo ? `<div class="banner alert warn">⚠️ Último respaldo: ${hace(ult)}. Los datos solo viven en este equipo.<span class="grow"></span><button class="btn sm acc" data-a="respaldoRapido">💾 Guardar respaldo</button></div>` : ''}`;
 }
 A.respaldoRapido = async () => { await guardarRespaldo(!!navigator.canShare); toast('✅ Respaldo guardado'); render(); };
@@ -793,9 +932,9 @@ function rerender(){ const y = window.scrollY; $('#main').innerHTML = SCREENS[UI
 
 /* ---------------- selects comunes ---------------- */
 const opt = (v, t, sel) => `<option value="${esc(v)}" ${String(v) === String(sel) ? 'selected' : ''}>${esc(t)}</option>`;
-function eventosOpts(sel, {todos = 'Todos los eventos', soloAbiertos = false, ninguno = null} = {}){
-  const evs = [...S.eventos].filter(e => !soloAbiertos || e.estado !== 'Cerrado').sort((a,b) => (b.fecha_inicio||'').localeCompare(a.fecha_inicio||''));
-  return (ninguno != null ? opt('', ninguno, sel) : (todos ? opt('', todos, sel) : '')) + evs.map(e => opt(e.id, `${e.nombre}${e.fecha_inicio ? ' · ' + fdate(e.fecha_inicio) : ''}${e.estado === 'Cerrado' ? ' (cerrado)' : ''}`, sel)).join('');
+function eventosOpts(sel, {todos = 'Todos los eventos', soloAbiertos = false, ninguno = null, sede = vista()} = {}){
+  const evs = [...S.eventos].filter(e => enSede(e, sede) && (!soloAbiertos || e.estado !== 'Cerrado')).sort((a,b) => (b.fecha_inicio||'').localeCompare(a.fecha_inicio||''));
+  return (ninguno != null ? opt('', ninguno, sel) : (todos ? opt('', todos, sel) : '')) + evs.map(e => opt(e.id, `${sede === TODAS ? '[' + e.sede_codigo + '] ' : ''}${e.nombre}${e.fecha_inicio ? ' · ' + fdate(e.fecha_inicio) : ''}${e.estado === 'Cerrado' ? ' (cerrado)' : ''}`, sel)).join('');
 }
 function catsEnUso(){ const set = new Set(S.productos.map(p => p.categoria)); return CATEGORIAS.filter(c => set.has(c)).concat([...set].filter(c => !CATEGORIAS.includes(c))); }
 function catChips(sel, action){ return `<div class="chips">${['Todas', ...catsEnUso()].map(c => `<button class="chip ${sel===c?'on':''}" data-a="${action}" data-v="${esc(c)}">${c === 'Todas' ? 'Todas' : (CAT_ICON[c]||'') + ' ' + esc(c)}</button>`).join('')}</div>`; }
@@ -813,13 +952,17 @@ SCREENS.inicio = () => {
   ${sinCatalogo ? `<div class="card"><h2>👋 Bienvenidos</h2><p>Para empezar:</p>
     <ol><li>Revisa la <a href="#config">configuración</a> (sede y responsable).</li><li><b>Importa la hoja de Alika</b> (Excel o CSV).</li><li>Crea el evento donde van a vender.</li></ol>
     <div class="row"><button class="btn pri big" data-a="importar">📥 Importar hoja de Alika</button><button class="btn ghost big" data-a="go" data-s="respaldo">💾 Cargar un respaldo</button></div></div>` : ''}
-  <button class="btn acc huge" data-a="go" data-s="vender" style="margin-bottom:14px">🛒 VENDER</button>
+  ${esTodas() ? '' : `<button class="btn acc huge" data-a="go" data-s="vender" style="margin-bottom:14px;background:var(--sede);border-color:var(--sede)">🛒 VENDER EN ${esc(sedeNombre(vista()).toUpperCase())}</button>`}
   <div class="grid g4">
     <div class="kpi"><div class="l">Venta de hoy</div><div class="v">${money(rHoy.venta)}</div><div class="s">${int(rHoy.piezas)} piezas · margen ${money(rHoy.margen)}</div></div>
-    <div class="kpi"><div class="l">${ev ? 'Evento: ' + esc(ev.nombre) : 'Sin evento activo'}</div><div class="v">${rEv ? money(rEv.venta) : '—'}</div><div class="s">${rEv ? `${int(rEv.piezas)} piezas vendidas` : '<a href="#eventos">Activar un evento</a>'}</div></div>
+    <div class="kpi"><div class="l">${ev ? 'Evento: ' + esc(ev.nombre) : esTodas() ? 'Eventos abiertos' : 'Sin evento activo'}</div><div class="v">${rEv ? money(rEv.venta) : esTodas() ? int(S.eventos.filter(e => e.estado !== 'Cerrado').length) : '—'}</div><div class="s">${rEv ? `${int(rEv.piezas)} piezas vendidas` : esTodas() ? 'en todas las sedes' : '<a href="#eventos">Activar un evento</a>'}</div></div>
     <div class="kpi"><div class="l">Utilidad del evento</div><div class="v ${rEv && rEv.utilidad < 0 ? 'neg' : 'pos'}">${rEv ? money(rEv.utilidad) : '—'}</div><div class="s">${rEv ? `gastos ${money(rEv.gastos)}` : ''}</div></div>
     <div class="kpi"><div class="l">Existencia total</div><div class="v">${int(inv.piezas)} pzs</div><div class="s">Consignación: ${money(inv.valor)}</div></div>
   </div>
+  ${esTodas() ? `<div class="card" style="margin-top:14px"><h3>🌐 Por sede</h3><div class="tw"><table class="t"><thead><tr><th>Sede</th><th class="n">Existencia</th><th class="n">Valor consignación</th><th class="n">Venta de hoy</th><th class="n">Utilidad acumulada</th><th>Evento activo</th></tr></thead><tbody>
+    ${sedesCodigos().map(c => { const i = inventarioTotales(c), h = resultados({sede:c, desde:hoy, hasta:hoy}), a = resultados({sede:c}), e = eventoActivo(c);
+      return `<tr><td>${sedeTag(c)} ${esc(sedeNombre(c))}</td><td class="n">${int(i.piezas)}</td><td class="n">${money(i.valor)}</td><td class="n">${money(h.venta)}</td><td class="n ${a.utilidad < 0 ? 'neg' : 'pos'}">${money(a.utilidad)}</td><td class="small">${e ? esc(e.nombre) : '—'}</td></tr>`; }).join('')}
+    <tr class="tot"><td>Total</td><td class="n">${int(inv.piezas)}</td><td class="n">${money(inv.valor)}</td><td class="n">${money(rHoy.venta)}</td><td class="n">${money(resultados({sede:TODAS}).utilidad)}</td><td></td></tr></tbody></table></div></div>` : ''}
   <div class="grid g2" style="margin-top:14px">
     <div class="card"><div class="row between"><h3>⚠️ Existencia baja (≤ ${int(S.config.umbral_existencia_baja)})</h3><span class="pill ${bajas.length ? 'warn' : 'ok'}">${bajas.length}</span></div>
       ${bajas.length ? `<div class="lowlist"><table class="t">${bajas.sort((a,b) => stockOf(a.id).total - stockOf(b.id).total).slice(0,60).map(v => `<tr class="click" data-a="kardex" data-v="${v.id}"><td>${esc(varLabel(v.id))}</td><td class="n"><span class="pill ${stockOf(v.id).total <= 0 ? 'bad' : 'warn'}">${int(stockOf(v.id).total)}</span></td></tr>`).join('')}</table></div>` : '<div class="muted">Todo en orden.</div>'}
@@ -836,7 +979,9 @@ SCREENS.inicio = () => {
    VENDER
    ========================================================================= */
 SCREENS.vender = () => {
-  const abiertos = S.eventos.filter(e => e.estado !== 'Cerrado');
+  if (esTodas()) return `${topbar('Vender')}<div class="card empty"><h2>Elige una sede para registrar</h2><p>Con "Todas" seleccionado no se puede vender. ¿Dónde estás vendiendo?</p>
+    <div class="row" style="justify-content:center">${sedes().map(x => `<button class="btn big" style="background:${esc(x.color)};border-color:${esc(x.color)};color:#fff" data-a="setSede" data-v="${esc(x.codigo)}">📍 ${esc(x.nombre)}</button>`).join('')}</div></div>`;
+  const abiertos = S.eventos.filter(e => e.estado !== 'Cerrado' && enSede(e));
   const ev = eventoActivo();
   if (!S.productos.length) return `${topbar('Vender')}<div class="card empty"><p>Todavía no hay productos.</p><button class="btn pri big" data-a="importar">📥 Importar hoja de Alika</button></div>`;
   return `${topbar('Vender')}
@@ -867,20 +1012,20 @@ function renderGrid(){
     const st = sum(vs, v => stockOf(v.id).total - enCarrito(v.id));
     return `<button class="pcard ${st <= 0 ? 'out' : ''}" data-a="elegirProd" data-p="${p.id}">
       <div class="ph">${p.foto ? `<img src="${esc(p.foto)}" alt="">` : (CAT_ICON[p.categoria] || '✨')}</div>
-      <div class="nm">${esc(p.nombre)}</div><div class="pr">${money(p.precio_venta)}</div>
+      <div class="nm">${esc(p.nombre)}</div><div class="pr">${money(precioVenta(p))}</div>
       <div class="st">${esc(p.clave)} · ${int(st)} pzs · ${vs.length} color${vs.length === 1 ? '' : 'es'}</div></button>`;
   }).join('') : '<div class="empty">No se encontró nada con esa búsqueda.</div>';
 }
 I.vq = debounce(el => { UI.vq = el.value; renderGrid(); }, 120);
 A.vcat = el => { UI.vcat = el.dataset.v; $$('[data-a="vcat"]').forEach(b => b.classList.toggle('on', b.dataset.v === UI.vcat)); renderGrid(); };
-C.setEvento = async el => { await saveConfig({evento_activo_id: el.value || null}); const e = IDX.ev.get(el.value); if (e && e.estado === 'Planeado'){ e.estado = 'Activo'; await put('eventos', e); } rerender(); };
-A.eventoRapido = () => editarEvento(null, {rapido:true});
+C.setEvento = async el => { await setEventoActivo(vista(), el.value || null); const e = IDX.ev.get(el.value); if (e && e.estado === 'Planeado'){ e.estado = 'Activo'; await put('eventos', e); } rerender(); };
+A.eventoRapido = () => { if (requiereSede()) editarEvento(null, {rapido:true}); };
 A.elegirProd = el => {
   const p = IDX.prod.get(el.dataset.p); const vs = (IDX.varsByProd.get(p.id) || []).filter(v => v.activo !== false);
   const libre = v => stockOf(v.id).total - sum(UI.cart.filter(l => l.vid === v.id), l => l.q);
   const conSt = vs.filter(v => libre(v) > 0);
   if (vs.length === 1 && conSt.length === 1){ agregarCarrito(vs[0].id); return; }
-  modal(`${mhead(esc(p.nombre))}<div class="muted" style="margin:-6px 0 12px">${esc(p.clave)} · ${money(p.precio_venta)} — elige el color</div>
+  modal(`${mhead(esc(p.nombre))}<div class="muted" style="margin:-6px 0 12px">${esc(p.clave)} · ${money(precioVenta(p))} — elige el color</div>
     <div class="colors">${vs.sort((a,b) => libre(b) - libre(a) || a.color.localeCompare(b.color)).map(v => `<button data-a="addVar" data-v="${v.id}" ${libre(v) <= 0 ? 'disabled' : ''}>${esc(v.color)}<small>${libre(v) > 0 ? `quedan ${int(libre(v))}` : 'agotado'}</small></button>`).join('')}</div>`);
 };
 A.addVar = el => { closeModal(); agregarCarrito(el.dataset.v); };
@@ -889,7 +1034,7 @@ function agregarCarrito(vid){
   const enCarrito = sum(UI.cart.filter(l => l.vid === vid), l => l.q);
   if (enCarrito + 1 > stockOf(vid).total){ toast(`No hay suficientes piezas: quedan ${int(stockOf(vid).total)}`); return; }
   const l = UI.cart.find(x => x.vid === vid);
-  if (l) l.q++; else UI.cart.push({vid, q:1, precio:num(p.precio_venta)});
+  if (l) l.q++; else UI.cart.push({vid, q:1, precio:precioVenta(p)});
   UI.ultimaVenta = null; renderCart(); renderGrid();
 }
 function cartCalc(){
@@ -958,6 +1103,7 @@ A.precioLinea = el => {
   $('#npok', m).onclick = () => { l.precio = num(val('#np', m)); closeModal(); renderCart(); };
 };
 A.cobrar = async () => {
+  if (!requiereSede()) return;
   const c = cartCalc(); if (!c.lines.length) return;
   const ev = eventoActivo();
   if (!UI.consumo && !ev){ await alertDlg('Falta el evento', 'Elige arriba el evento donde estás vendiendo (o crea el "Evento de hoy").'); return; }
@@ -995,7 +1141,7 @@ function pickVariante({titulo = 'Elige la pieza', soloConExistencia = false} = {
       const vs = S.variantes.filter(v => { const p = IDX.prod.get(v.producto_id); if (!p) return false; if (soloConExistencia && stockOf(v.id).total <= 0) return false;
         return !Q || norm(p.nombre + ' ' + p.clave + ' ' + v.color).includes(Q) || Q.split(' ').every(w => norm(p.nombre + ' ' + p.clave + ' ' + v.color).includes(w)); });
       $('#pkl', m).innerHTML = `<div class="tw" style="max-height:60vh"><table class="t">${vs.slice(0, 150).map(v => { const p = IDX.prod.get(v.producto_id);
-        return `<tr class="click" data-pick="${v.id}"><td><b>${esc(p.nombre)}</b><div class="small muted">${esc(p.clave)}</div></td><td>${esc(v.color)}</td><td class="n">${money(p.precio_venta)}</td><td class="n">${int(stockOf(v.id).total)} pzs</td></tr>`; }).join('')}</table></div>
+        return `<tr class="click" data-pick="${v.id}"><td><b>${esc(p.nombre)}</b><div class="small muted">${esc(p.clave)}</div></td><td>${esc(v.color)}</td><td class="n">${money(precioVenta(p))}</td><td class="n">${int(stockOf(v.id).total)} pzs</td></tr>`; }).join('')}</table></div>
         ${vs.length > 150 ? `<div class="small muted">Mostrando 150 de ${vs.length}. Escribe para filtrar.</div>` : ''}${!vs.length ? '<div class="empty">Sin resultados</div>' : ''}`;
       $$('[data-pick]', m).forEach(tr => tr.onclick = () => { done = true; closeModal(); res(tr.dataset.pick); });
     };
@@ -1005,6 +1151,7 @@ function pickVariante({titulo = 'Elige la pieza', soloConExistencia = false} = {
 
 /* cambio de pieza */
 A.cambio = async () => {
+  if (!requiereSede()) return;
   const ev = eventoActivo();
   if (!ev){ await alertDlg('Falta el evento', 'Elige primero el evento donde estás vendiendo.'); return; }
   const st = {ret:null, nueva:null, precioRet:0, precioNueva:0, metodo:'Efectivo'};
@@ -1022,8 +1169,8 @@ A.cambio = async () => {
       ${pr && pn ? `<div class="alert ${dif > 0 ? 'info' : dif < 0 ? 'warn' : 'ok'}">${dif > 0 ? `Cobrar al cliente: <b>${money(dif)}</b>` : dif < 0 ? `Devolver al cliente: <b>${money(-dif)}</b>` : 'Cambio parejo: no hay diferencia de precio.'}</div>
         ${dif ? `<div class="seg">${METODOS.map(x => `<button class="${st.metodo===x?'on':''}" data-m="${x}">${x}</button>`).join('')}</div>` : ''}
         <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn pri big" id="cok">Registrar cambio</button></div>` : ''}`;
-    $('#cbr', m).onclick = async () => { const v = await pickVariante({titulo:'¿Qué pieza regresa?'}); if (v){ st.ret = v; st.precioRet = num(prodOfVar(v).precio_venta); } draw(); };
-    $('#cbn', m).onclick = async () => { const v = await pickVariante({titulo:'¿Qué pieza se lleva?', soloConExistencia:true}); if (v){ st.nueva = v; st.precioNueva = num(prodOfVar(v).precio_venta); } draw(); };
+    $('#cbr', m).onclick = async () => { const v = await pickVariante({titulo:'¿Qué pieza regresa?'}); if (v){ st.ret = v; st.precioRet = precioVenta(prodOfVar(v)); } draw(); };
+    $('#cbn', m).onclick = async () => { const v = await pickVariante({titulo:'¿Qué pieza se lleva?', soloConExistencia:true}); if (v){ st.nueva = v; st.precioNueva = precioVenta(prodOfVar(v)); } draw(); };
     if ($('#cpr', m)) $('#cpr', m).onchange = e => { st.precioRet = num(e.target.value); draw(); };
     if ($('#cpn', m)) $('#cpn', m).onchange = e => { st.precioNueva = num(e.target.value); draw(); };
     $$('[data-m]', m).forEach(b => b.onclick = () => { st.metodo = b.dataset.m; draw(); });
@@ -1061,12 +1208,13 @@ SCREENS.inventario = () => {
     <button class="btn ghost" data-a="lote" data-m="DEVOLUCION">↩️ Devolver a Alika</button>
     <button class="btn ghost" data-a="lote" data-m="CONTEO">📋 Ajuste / conteo físico</button>
     <button class="btn ghost" data-a="lote" data-m="TRASPASO">🚚 Stand ⇄ Casa</button>
+    <button class="btn ghost" data-a="lote" data-m="TRASPASO_SEDE">🔀 Traspaso a otra sede</button>
   </div>
   <div class="card">
     <div class="row" style="margin-bottom:10px"><input type="search" placeholder="🔍 Buscar producto, clave o color…" value="${esc(UI.iq)}" data-i="iq" style="flex:1;width:auto;min-width:220px">
       <label class="chk"><input type="checkbox" data-c="iSolo" ${UI.iSolo ? 'checked' : ''}> Solo con existencia</label></div>
     ${catChips(UI.icat, 'icat')}
-    <div class="tw" style="margin-top:10px"><table class="t"><thead><tr><th>Clave</th><th>Producto</th><th>Color</th><th class="n">Stand</th><th class="n">Casa</th><th class="n">Existencia</th><th class="n">Precio venta</th><th class="n">Valor fab.</th></tr></thead><tbody id="itb"></tbody></table></div>
+    <div class="tw" style="margin-top:10px"><table class="t"><thead><tr><th>Clave</th><th>Producto</th><th>Color</th>${esTodas() ? sedesCodigos().map(c => `<th class="n">${sedeTag(c)}</th>`).join('') : '<th class="n">Stand</th><th class="n">Casa</th>'}<th class="n">Existencia${esTodas() ? ' total' : ''}</th><th class="n">Precio venta</th><th class="n">Valor fab.</th></tr></thead><tbody id="itb"></tbody></table></div>
   </div>
   ${(S.config.lista_casa || []).length ? `<div class="card"><h3>🏠 Lista "Tenemos en casa" (de la hoja de Alika)</h3><ul>${S.config.lista_casa.map(x => `<li>${esc(x)}</li>`).join('')}</ul><div class="small muted">Es una lista de referencia. Para que cuenten como "en casa" en el inventario, usa <b>Stand ⇄ Casa</b>.</div></div>` : ''}`;
 };
@@ -1075,10 +1223,10 @@ function renderInvTabla(){
   const Q = norm(UI.iq);
   const vs = S.variantes.map(v => ({v, p:IDX.prod.get(v.producto_id), s:stockOf(v.id)})).filter(x => x.p && (UI.icat === 'Todas' || x.p.categoria === UI.icat) && (!UI.iSolo || x.s.total > 0) && (!Q || Q.split(' ').every(w => norm(x.p.nombre + ' ' + x.p.clave + ' ' + x.v.color).includes(w))))
     .sort((a,b) => a.p.categoria.localeCompare(b.p.categoria) || a.p.nombre.localeCompare(b.p.nombre) || a.v.color.localeCompare(b.v.color));
-  const umb = num(S.config.umbral_existencia_baja);
+  const umb = num(S.config.umbral_existencia_baja); const T = esTodas(); const sc = sedesCodigos();
   $('#itb').innerHTML = vs.map(({v,p,s}) => `<tr class="click" data-a="kardex" data-v="${v.id}"><td class="small">${esc(p.clave)}${p.revisar ? ' <span class="pill warn">revisar</span>' : ''}</td><td>${esc(p.nombre)}</td><td>${esc(v.color)}</td>
-    <td class="n">${int(s.Stand)}</td><td class="n">${s.Casa ? int(s.Casa) : ''}</td><td class="n"><span class="pill ${s.total <= 0 ? 'bad' : s.total <= umb ? 'warn' : 'ok'}">${int(s.total)}</span></td><td class="n">${money(p.precio_venta)}</td><td class="n">${money(s.total * num(p.precio_fabricante))}</td></tr>`).join('') +
-    `<tr class="tot"><td colspan="5">${vs.length} variantes</td><td class="n">${int(sum(vs, x => x.s.total))}</td><td></td><td class="n">${money(sum(vs, x => x.s.total * num(x.p.precio_fabricante)))}</td></tr>`;
+    ${T ? sc.map(c => `<td class="n">${int(stockOf(v.id, c).total)}</td>`).join('') : `<td class="n">${int(s.Stand)}</td><td class="n">${s.Casa ? int(s.Casa) : ''}</td>`}<td class="n"><span class="pill ${s.total <= 0 ? 'bad' : s.total <= umb ? 'warn' : 'ok'}">${int(s.total)}</span></td><td class="n">${money(precioVenta(p))}</td><td class="n">${money(s.total * num(p.precio_fabricante))}</td></tr>`).join('') +
+    `<tr class="tot"><td colspan="3">${vs.length} variantes</td>${T ? sc.map(c => `<td class="n">${int(sum(vs, x => stockOf(x.v.id, c).total))}</td>`).join('') : '<td></td><td></td>'}<td class="n">${int(sum(vs, x => x.s.total))}</td><td></td><td class="n">${money(sum(vs, x => x.s.total * num(x.p.precio_fabricante)))}</td></tr>`;
 }
 I.iq = debounce(el => { UI.iq = el.value; renderInvTabla(); }, 150);
 C.iSolo = el => { UI.iSolo = el.checked; renderInvTabla(); };
@@ -1086,32 +1234,39 @@ A.icat = el => { UI.icat = el.dataset.v; $$('[data-a="icat"]').forEach(b => b.cl
 
 /* kárdex de una variante */
 A.kardex = el => kardexModal(el.dataset.v);
-function kardexRows(vid){
+function kardexRows(vid, sede = vista()){
   let saldo = 0;
-  return S.movimientos.filter(m => m.variante_id === vid).map(m => { saldo += delta(m); return {m, d:delta(m), saldo}; });
+  return S.movimientos.filter(m => m.variante_id === vid && enSede(m, sede)).map(m => { saldo += delta(m); return {m, d:delta(m), saldo}; });
+}
+function detalleMov(m){
+  return [IDX.ev.get(m.evento_id)?.nombre, esVentaMov(m) ? money(m.precio_venta_unit) + (num(m.descuento) ? ' −' + money(m.descuento) : '') : '', m.metodo_pago, m.persona, m.motivo,
+    m.tipo === 'TRASPASO' ? `${m.ubicacion} → ${m.ubicacion_destino}` : '', m.tipo === 'TRASPASO_SEDE' ? (num(m.cantidad) < 0 ? `hacia ${sedeNombre(m.sede_destino)}` : `desde ${sedeNombre(m.sede_origen)}`) : '', m.nota].filter(Boolean).join(' · ');
 }
 function kardexModal(vid){
   const v = IDX.vari.get(vid), p = IDX.prod.get(v.producto_id), s = stockOf(vid);
   const rows = kardexRows(vid);
   modal(`${mhead('Kárdex')}<div class="row between"><div><div class="b" style="font-size:1.15rem">${esc(p.nombre)} · ${esc(v.color)}</div>
-      <div class="muted small">${esc(p.clave)} · ${esc(p.categoria)} · Fab. ${money(p.precio_fabricante)} · Venta ${money(p.precio_venta)}</div></div>
-      <div class="kpi" style="padding:8px 14px"><div class="l">Existencia</div><div class="v">${int(s.total)}</div><div class="s">Stand ${int(s.Stand)} · Casa ${int(s.Casa)}</div></div></div>
+      <div class="muted small">${esc(p.clave)} · ${esc(p.categoria)} · Fab. ${money(p.precio_fabricante)} · Venta ${money(precioVenta(p))} · ${esTodas() ? 'todas las sedes' : 'sede ' + esc(sedeNombre(vista()))}</div></div>
+      <div class="kpi" style="padding:8px 14px"><div class="l">Existencia</div><div class="v">${int(s.total)}</div><div class="s">${esTodas() ? sedesCodigos().map(c => `${c} ${int(stockOf(vid, c).total)}`).join(' · ') : `Stand ${int(s.Stand)} · Casa ${int(s.Casa)}`}</div></div></div>
     <div class="tw" style="margin:12px 0;max-height:50vh"><table class="t"><thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th class="n">Mov.</th><th class="n">Saldo</th><th></th></tr></thead><tbody>
-    ${rows.map(({m, d, saldo}) => `<tr><td class="small">${fdt(m.fecha_hora)}</td><td>${TIPO_MOV_TXT[m.tipo] || m.tipo}</td>
-      <td class="small">${[IDX.ev.get(m.evento_id)?.nombre, esVentaMov(m) ? money(m.precio_venta_unit) + (num(m.descuento) ? ' −' + money(m.descuento) : '') : '', m.metodo_pago, m.persona, m.motivo, m.tipo === 'TRASPASO' ? `${m.ubicacion} → ${m.ubicacion_destino}` : '', m.nota].filter(Boolean).map(esc).join(' · ')}</td>
+    ${rows.map(({m, d, saldo}) => `<tr><td class="small">${fdt(m.fecha_hora)}</td><td>${esTodas() ? sedeTag(m.sede_codigo) + ' ' : ''}${TIPO_MOV_TXT[m.tipo] || m.tipo}</td>
+      <td class="small">${esc(detalleMov(m))}</td>
       <td class="n ${d < 0 ? 'neg' : d > 0 ? 'pos' : ''}">${m.tipo === 'TRASPASO' ? '⇄ ' + int(m.cantidad) : (d > 0 ? '+' : '') + int(d)}</td><td class="n b">${int(saldo)}</td>
-      <td>${m.corte_id ? '<span class="pill gray">en corte</span>' : `<button class="btn sm ghost" style="min-height:38px" data-a="borrarMov" data-id="${m.id}" title="Borrar">🗑️</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Sin movimientos</td></tr>'}
+      <td>${m.corte_id ? `<span class="pill ${corteDe(m)?.estado === 'Pagado' ? 'ok' : 'gray'}">${corteDe(m)?.estado === 'Pagado' ? 'liquidada' : 'en corte'}</span>` : `<button class="btn sm ghost" style="min-height:38px" data-a="borrarMov" data-id="${m.id}" title="Borrar">🗑️</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">Sin movimientos</td></tr>'}
     </tbody></table></div>
     <div class="row"><button class="btn pri" data-a="ajusteUno" data-v="${vid}">± Ajustar existencia</button><button class="btn ghost" data-a="repKardex" data-v="${vid}">🖨️ Imprimir kárdex</button></div>`, {wide:true});
 }
 A.borrarMov = async el => {
+  if (!requiereSede()) return;
   const m = S.movimientos.find(x => x.id === el.dataset.id); if (!m) return;
-  if (m.corte_id){ alertDlg('No se puede borrar', 'Este movimiento ya está en un corte con Alika. Solo se puede revertir con un movimiento contrario (ajuste).'); return; }
-  const grupo = m.venta_grupo ? S.movimientos.filter(x => x.venta_grupo === m.venta_grupo && x.tipo === 'CAMBIO' && m.tipo === 'CAMBIO') : [m];
-  if (!await confirmDlg({titulo:'¿Borrar movimiento?', msg:`${TIPO_MOV_TXT[m.tipo]} del ${fdt(m.fecha_hora)} (${int(m.cantidad)} pza). ${grupo.length > 1 ? 'También se borrará la otra mitad del cambio. ' : ''}La existencia se recalcula.`, ok:'Sí, borrar', danger:true})) return;
+  const grupo = m.tipo === 'TRASPASO_SEDE' && m.traspaso_id ? S.movimientos.filter(x => x.traspaso_id === m.traspaso_id)
+    : (m.venta_grupo && m.tipo === 'CAMBIO') ? S.movimientos.filter(x => x.venta_grupo === m.venta_grupo && x.tipo === 'CAMBIO') : [m];
+  if (grupo.some(x => x.corte_id)){ alertDlg('No se puede borrar', 'Este movimiento ya está en un corte con Alika (venta liquidada o por liquidar). Solo se puede revertir con un movimiento contrario (ajuste).'); return; }
+  if (!await confirmDlg({titulo:'¿Borrar movimiento?', msg:`${TIPO_MOV_TXT[m.tipo]} del ${fdt(m.fecha_hora)} (${int(Math.abs(m.cantidad))} pza). ${grupo.length > 1 ? (m.tipo === 'TRASPASO_SEDE' ? 'También se borra la entrada/salida en la otra sede. ' : 'También se borrará la otra mitad del cambio. ') : ''}La existencia se recalcula.`, ok:'Sí, borrar', danger:true})) return;
   await del('movimientos', grupo.map(x => x.id)); closeModal(); toast('Movimiento borrado'); kardexModal(m.variante_id); if (UI.screen !== 'vender') rerender();
 };
 A.ajusteUno = el => {
+  if (!requiereSede()) return;
   const vid = el.dataset.v; let signo = -1;
   const m = modal(`${mhead('± Ajuste de existencia')}<div class="stack"><div class="b">${esc(varLabel(vid))}</div><div class="muted">Existencia actual: ${int(stockOf(vid).total)}</div>
     <div class="seg"><button data-s="1">➕ Sumar</button><button class="on" data-s="-1">➖ Restar</button></div>
@@ -1125,34 +1280,40 @@ A.ajusteUno = el => {
     if (!q){ toast('Escribe la cantidad.'); return; } if (!motivo){ toast('El ajuste necesita motivo.'); return; }
     if (signo < 0 && q > stockOf(vid).total){ toast(`No hay suficientes piezas: quedan ${int(stockOf(vid).total)}`); return; }
     const p = prodOfVar(vid);
-    await put('movimientos', {id:uuid(), fecha_hora:nowISO(), tipo:'AJUSTE', variante_id:vid, producto_id:p.id, cantidad:signo * q, ubicacion:'Stand', precio_venta_unit:num(p.precio_venta), precio_fabricante_unit:num(p.precio_fabricante), motivo, nota:val('#an', m)});
+    await put('movimientos', {id:uuid(), fecha_hora:nowISO(), tipo:'AJUSTE', variante_id:vid, producto_id:p.id, cantidad:signo * q, ubicacion:'Stand', precio_venta_unit:precioVenta(p), precio_fabricante_unit:num(p.precio_fabricante), motivo, nota:val('#an', m)});
     closeModal(); closeModal(); toast('✅ Ajuste guardado'); kardexModal(vid); if (UI.screen === 'inventario') renderInvTabla();
   };
 };
 
 /* captura por lote: ENTRADA, DEVOLUCION, CONTEO (ajustes), TRASPASO */
-A.lote = el => loteModal(el.dataset.m);
+A.lote = el => { if (requiereSede()) loteModal(el.dataset.m); };
 function loteModal(mode){
+  if (esTodas()) throw new Error('Elige una sede para registrar.');
+  const otras = sedes().filter(x => x.codigo !== vista());
+  if (mode === 'TRASPASO_SEDE' && !otras.length){ alertDlg('No hay otra sede', 'Agrega otra sede en Configuración.'); return; }
   const L = {q:new Map(), search:'', cat:'Todas', fecha:localDT(), nota:'', ubicacion:'Stand', destino:'Casa', motivo:'Conteo físico'};
-  const TIT = {ENTRADA:'📥 Recibir mercancía de Alika', DEVOLUCION:'↩️ Devolver mercancía a Alika', CONTEO:'📋 Conteo físico / ajuste', TRASPASO:'🚚 Pasar piezas entre Stand y Casa'};
+  const TIT = {ENTRADA:`📥 Recibir mercancía de Alika en ${esc(sedeNombre(vista()))}`, DEVOLUCION:`↩️ Devolver mercancía a Alika desde ${esc(sedeNombre(vista()))}`, CONTEO:`📋 Conteo físico / ajuste en ${esc(sedeNombre(vista()))}`, TRASPASO:'🚚 Pasar piezas entre Stand y Casa',
+    TRASPASO_SEDE:`🔀 Traspaso de ${esc(sedeNombre(vista()))} a otra sede`};
   const AYUDA = {ENTRADA:'Escribe cuántas piezas llegaron de cada variante. Solo se guardan las que tengan cantidad.',
     DEVOLUCION:'Escribe cuántas piezas se le regresan a Alika.',
     CONTEO:'Escribe lo que contaste físicamente. La app crea un ajuste por la diferencia contra el sistema.',
-    TRASPASO:'Escribe cuántas piezas se mueven. La existencia total no cambia.'};
+    TRASPASO:'Escribe cuántas piezas se mueven. La existencia total no cambia.',
+    TRASPASO_SEDE:'Las piezas salen de esta sede y entran en la sede destino en un solo paso. El total consolidado no cambia.'};
   const m = modal(`${mhead(TIT[mode])}<div class="alert info">${AYUDA[mode]}</div>
     <div class="row">
       <label class="f" style="flex:1;min-width:200px">Fecha y hora<input type="datetime-local" id="lf" value="${L.fecha}"></label>
       ${mode === 'ENTRADA' ? `<label class="f">Se guarda en<select id="lu">${UBICACIONES.map(u => opt(u, u, 'Stand')).join('')}</select></label>` : ''}
       ${mode === 'TRASPASO' ? `<label class="f">Dirección<select id="lu">${opt('Stand','Del Stand → a Casa','Stand')}${opt('Casa','De Casa → al Stand','')}</select></label>` : ''}
+      ${mode === 'TRASPASO_SEDE' ? `<label class="f">Salen de<select id="lu">${UBICACIONES.map(u => opt(u, u, 'Stand')).join('')}</select></label><label class="f">Hacia la sede<select id="ls">${otras.map(x => opt(x.codigo, x.nombre, otras[0].codigo)).join('')}</select></label>` : ''}
       ${mode === 'CONTEO' ? `<label class="f">Motivo<select id="lm">${['Conteo físico','Rotura','Pérdida','Error de captura','Otro'].map(x => opt(x, x, 'Conteo físico')).join('')}</select></label>` : ''}
       <label class="f" style="flex:1;min-width:200px">Nota<input type="text" id="ln" placeholder="Opcional"></label>
     </div>
     <div class="row" style="margin:10px 0"><input type="search" id="lq" placeholder="🔍 Buscar…" style="flex:1;width:auto;min-width:200px"></div>
     <div id="lc"></div>
-    <div class="tw" style="max-height:46vh;margin-top:8px"><table class="t"><thead><tr><th>Producto</th><th>Color</th><th class="n">${mode === 'TRASPASO' ? 'En origen' : 'Sistema'}</th><th class="n" style="width:130px">${mode === 'CONTEO' ? 'Contado' : 'Cantidad'}</th>${mode === 'CONTEO' ? '<th class="n">Dif.</th>' : ''}</tr></thead><tbody id="lb"></tbody></table></div>
+    <div class="tw" style="max-height:46vh;margin-top:8px"><table class="t"><thead><tr><th>Producto</th><th>Color</th><th class="n">${mode.startsWith('TRASPASO') ? 'En origen' : 'Sistema'}</th><th class="n" style="width:130px">${mode === 'CONTEO' ? 'Contado' : 'Cantidad'}</th>${mode === 'CONTEO' ? '<th class="n">Dif.</th>' : ''}</tr></thead><tbody id="lb"></tbody></table></div>
     <div class="row between" style="margin-top:12px"><div id="lres" class="b"></div><button class="btn pri big" id="lok">Guardar</button></div>`, {wide:true});
-  const origen = () => mode === 'TRASPASO' ? val('#lu', m) : 'Stand';
-  const disp = vid => mode === 'TRASPASO' ? stockOf(vid)[origen()] : stockOf(vid).total;
+  const origen = () => mode.startsWith('TRASPASO') ? val('#lu', m) : 'Stand';
+  const disp = vid => mode.startsWith('TRASPASO') ? stockOf(vid)[origen()] : stockOf(vid).total;
   const drawChips = () => { $('#lc', m).innerHTML = catChips(L.cat, 'x'); $$('#lc .chip', m).forEach(b => b.onclick = e => { e.stopPropagation(); e.preventDefault(); L.cat = b.dataset.v; drawChips(); draw(); }); };
   const resumen = () => {
     let piezas = 0, n = 0;
@@ -1172,7 +1333,7 @@ function loteModal(mode){
     resumen();
   };
   $('#lq', m).oninput = debounce(e => { L.search = e.target.value; draw(); }, 150);
-  if (mode === 'TRASPASO') $('#lu', m).onchange = draw;
+  if (mode.startsWith('TRASPASO')) $('#lu', m).onchange = draw;
   drawChips(); draw();
   $('#lok', m).onclick = async () => {
     const fecha = val('#lf', m); const fh = fecha ? new Date(fecha).toISOString() : nowISO(); const nota = val('#ln', m);
@@ -1180,7 +1341,11 @@ function loteModal(mode){
     for (const [vid, raw] of L.q){
       if (raw === '' || raw == null) continue; const q = Math.round(num(raw)); const p = prodOfVar(vid);
       if (q < 0){ errores.push(`${varLabel(vid)}: cantidad negativa`); continue; }
-      const base = {id:uuid(), fecha_hora:fh, variante_id:vid, producto_id:p.id, precio_venta_unit:num(p.precio_venta), precio_fabricante_unit:num(p.precio_fabricante), nota};
+      const base = {id:uuid(), fecha_hora:fh, variante_id:vid, producto_id:p.id, precio_venta_unit:precioVenta(p), precio_fabricante_unit:num(p.precio_fabricante), nota};
+      if (mode === 'TRASPASO_SEDE' && q > 0){ const o = origen(), dest = val('#ls', m), tid = uuid();
+        if (q > stockOf(vid)[o]) errores.push(`${varLabel(vid)}: en ${o} hay ${int(stockOf(vid)[o])}`);
+        else movs.push({...base, id:uuid(), tipo:'TRASPASO_SEDE', cantidad:-q, ubicacion:o, sede_codigo:vista(), sede_destino:dest, traspaso_id:tid},
+                       {...base, id:uuid(), tipo:'TRASPASO_SEDE', cantidad:q, ubicacion:'Stand', sede_codigo:dest, sede_origen:vista(), traspaso_id:tid}); }
       if (mode === 'ENTRADA' && q > 0) movs.push({...base, tipo:'ENTRADA', cantidad:q, ubicacion:val('#lu', m)});
       if (mode === 'DEVOLUCION' && q > 0){ if (q > stockOf(vid).total) errores.push(`${varLabel(vid)}: quedan ${int(stockOf(vid).total)}`); else { const s = stockOf(vid); movs.push({...base, tipo:'DEVOLUCION', cantidad:q, ubicacion: s.Stand >= q ? 'Stand' : 'Casa'}); } }
       if (mode === 'TRASPASO' && q > 0){ const o = origen(); if (q > stockOf(vid)[o]) errores.push(`${varLabel(vid)}: en ${o} hay ${int(stockOf(vid)[o])}`); else movs.push({...base, tipo:'TRASPASO', cantidad:q, ubicacion:o, ubicacion_destino: o === 'Stand' ? 'Casa' : 'Stand'}); }
@@ -1236,6 +1401,8 @@ function editarProducto(pid){
       <label class="f">Desglose de costo (juegos, ej. 490+62)<input type="text" id="pd" value="${esc(p.desglose || '')}"></label>
     </div>
     <div id="pw"></div>
+    <details style="margin-top:8px" ${p.precios_sede && Object.values(p.precios_sede).some(x => num(x) > 0) ? 'open' : ''}><summary class="b" style="cursor:pointer;min-height:44px">Precio de venta distinto por sede (opcional)</summary>
+      <div class="grid g2">${sedes().map(x => `<label class="f">${esc(x.nombre)}<input type="number" inputmode="decimal" data-psede="${esc(x.codigo)}" value="${num((p.precios_sede || {})[x.codigo]) || ''}" placeholder="Igual al precio de venta"></label>`).join('')}</div></details>
     <label class="f" style="margin-top:10px">Nota<textarea id="pnt" rows="2">${esc(p.nota || '')}</textarea></label>
     <div class="row" style="margin-top:10px">
       <label class="chk"><input type="checkbox" id="pa" ${p.activo !== false ? 'checked' : ''}> Activo (aparece en Vender)</label>
@@ -1261,7 +1428,8 @@ function editarProducto(pid){
     const nombre = cleanTxt(val('#pn', m)); if (!nombre){ toast('Falta el nombre.'); return; }
     if (!pid && !nuevosColores.length) nuevosColores.push('ÚNICO');
     Object.assign(p, {clave: cleanTxt(val('#pc', m)) || claveDesdeNombre(nombre), nombre, categoria: val('#pk', m), precio_fabricante: num(val('#pf', m)), precio_sugerido: num(val('#ps', m)), precio_venta: num(val('#pv', m)),
-      desglose: val('#pd', m).trim(), nota: val('#pnt', m).trim(), activo: $('#pa', m).checked});
+      desglose: val('#pd', m).trim(), nota: val('#pnt', m).trim(), activo: $('#pa', m).checked,
+      precios_sede: Object.fromEntries($$('[data-psede]', m).filter(i => num(i.value) > 0).map(i => [i.dataset.psede, num(i.value)]))});
     if ($('#prv', m)) p.revisar = $('#prv', m).checked;
     if (p.precio_venta < p.precio_fabricante && !await confirmDlg({titulo:'🔴 Precio abajo del costo', msg:'El precio de venta es menor al de fabricante. ¿Guardar así?', danger:true})) return;
     await putMany({productos:[p], variantes:[...vars.filter(v => v._tog).map(v => { delete v._tog; return v; }), ...nuevosColores.map(c => ({id:uuid(), producto_id:p.id || (p.id = uuid()), color:c, activo:true}))]});
@@ -1315,6 +1483,7 @@ A.masivo = () => {
 
 /* importación */
 A.importar = () => {
+  if (!requiereSede()) return;
   const IM = {sheets:null, si:0, header:0, map:{}, an:null, nombre:''};
   const m = modal(`${mhead('📥 Importar hoja de Alika')}<div id="imb"></div>`, {wide:true});
   const paso1 = () => {
@@ -1383,18 +1552,20 @@ A.importar = () => {
       <div class="tw" style="max-height:40vh"><table class="t"><thead><tr><th>Fila</th><th>Clave</th><th>Producto</th><th>Color</th><th>Cat.</th><th class="n">Pzs</th><th class="n">Costo</th><th class="n">Sugerido</th><th>Nota</th></tr></thead><tbody>
       ${[...an.variantes.filter(v => v.revisar), ...an.variantes.slice(0, 40)].map(v => `<tr><td>${v.fila}</td><td>${esc(v.clave)}${v.revisar ? ' <span class="pill warn">revisar</span>' : ''}</td><td>${esc(v.nombre)}</td><td>${esc(v.color)}</td><td>${esc(v.categoria)}</td><td class="n">${v.piezas}</td><td class="n">${money(v.costo)}${v.desglose ? `<div class="small muted">${esc(v.desglose)}</div>` : ''}</td><td class="n">${money(v.sugerido)}</td><td class="small">${esc(v.nota)}</td></tr>`).join('')}
       </tbody></table></div></details>
+      <div class="card" style="background:var(--pribg)"><label class="f" style="font-size:1rem">📍 ¿A qué sede se carga este inventario?<select id="imsede">${sedes().map(x => opt(x.codigo, x.nombre, vista())).join('')}</select></label>
+        <div class="small muted">El catálogo (productos y precios) es el mismo para todas las sedes; las piezas y el historial quedan en la sede elegida.</div></div>
       <div class="row between"><button class="btn ghost" id="imback2">← Cambiar mapeo</button><button class="btn pri big" id="imok">✅ Confirmar importación</button></div></div>`;
     $('#imback2', m).onclick = paso2;
     $('#imok', m).onclick = async () => {
       const hist = $('#imhist', m)?.checked;
-      const o = {historial:hist, fechas:{}, stand:{}, uber:{}, persona: val('#impers', m) || 'Familia', precios: $('#impre', m)?.checked ? precios : [], casa: $('#imcasa', m)?.checked ? casa : []};
+      const o = {sede: val('#imsede', m) || vista(), historial:hist, fechas:{}, stand:{}, uber:{}, persona: val('#impers', m) || 'Familia', precios: $('#impre', m)?.checked ? precios : [], casa: $('#imcasa', m)?.checked ? casa : []};
       $$('[data-hf]', m).forEach(i => o.fechas[i.dataset.hf] = i.value); $$('[data-hs]', m).forEach(i => o.stand[i.dataset.hs] = num(i.value)); $$('[data-hu]', m).forEach(i => o.uber[i.dataset.hu] = num(i.value));
       const fechas = Object.values(o.fechas).sort(); if (hist && fechas.length) o.fechaCarga = localDate();
       $('#imok', m).disabled = true; $('#imok', m).textContent = 'Importando…';
       try {
         const r = await aplicarImport(an, o); closeModal();
-        const inv = inventarioTotales();
-        await alertDlg('✅ Importación terminada', `Se crearon <b>${r.productos}</b> productos, <b>${r.variantes}</b> variantes y <b>${r.movimientos}</b> movimientos${r.eventos ? `, ${r.eventos} eventos históricos y ${r.gastos} gastos` : ''}.${r.saltadas ? `<br>${r.saltadas} variante(s) ya existían y se saltaron.` : ''}<br><br>Existencia actual: <b>${int(inv.piezas)} piezas</b> · valor en consignación <b>${money(inv.valor)}</b>.`);
+        const inv = inventarioTotales(r.sede);
+        await alertDlg('✅ Importación terminada', `Sede: <b>${esc(sedeNombre(r.sede))}</b>.<br>Se crearon <b>${r.productos}</b> productos, <b>${r.variantes}</b> variantes y <b>${r.movimientos}</b> movimientos${r.eventos ? `, ${r.eventos} eventos históricos y ${r.gastos} gastos` : ''}.${r.saltadas ? `<br>${r.saltadas} variante(s) ya existían y se saltaron.` : ''}<br><br>Existencia actual: <b>${int(inv.piezas)} piezas</b> · valor en consignación <b>${money(inv.valor)}</b>.`);
         render();
       } catch (err){ $('#imok', m).disabled = false; $('#imok', m).textContent = '✅ Confirmar importación'; alertDlg('Error al importar', esc(err.message)); }
     };
@@ -1406,38 +1577,42 @@ A.importar = () => {
    EVENTOS
    ========================================================================= */
 SCREENS.eventos = () => {
-  const evs = [...S.eventos].sort((a,b) => (ESTADOS_EVENTO.indexOf(a.estado) === 2) - (ESTADOS_EVENTO.indexOf(b.estado) === 2) || (b.fecha_inicio || '').localeCompare(a.fecha_inicio || ''));
-  const act = S.config.evento_activo_id;
+  const evs = [...S.eventos].filter(e => enSede(e)).sort((a,b) => (ESTADOS_EVENTO.indexOf(a.estado) === 2) - (ESTADOS_EVENTO.indexOf(b.estado) === 2) || (b.fecha_inicio || '').localeCompare(a.fecha_inicio || ''));
+  const actDe = e => (S.config.eventos_activos || {})[e.sede_codigo];
   return `${topbar('Eventos')}<div class="row" style="margin-bottom:14px"><button class="btn pri" data-a="nuevoEvento">➕ Nuevo evento</button></div>
   ${evs.length ? `<div class="grid g2">${evs.map(e => { const r = resultados({evento_id:e.id});
-    return `<div class="card"><div class="row between"><div><h3 style="margin:0">${esc(e.nombre)}</h3><div class="small muted">${esc(e.tipo)} · ${fdate(e.fecha_inicio)}${e.fecha_fin && e.fecha_fin !== e.fecha_inicio ? ' al ' + fdate(e.fecha_fin) : ''}</div></div>
-      <div>${e.id === act && e.estado !== 'Cerrado' ? '<span class="pill ok">● vendiendo aquí</span> ' : ''}<span class="pill ${e.estado === 'Activo' ? 'ok' : e.estado === 'Cerrado' ? 'gray' : 'warn'}">${e.estado}</span></div></div>
+    return `<div class="card"><div class="row between"><div><h3 style="margin:0">${esTodas() ? sedeTag(e.sede_codigo) + ' ' : ''}${esc(e.nombre)}</h3><div class="small muted">${esc(e.tipo)} · ${fdate(e.fecha_inicio)}${e.fecha_fin && e.fecha_fin !== e.fecha_inicio ? ' al ' + fdate(e.fecha_fin) : ''}</div></div>
+      <div>${e.id === actDe(e) && e.estado !== 'Cerrado' ? '<span class="pill ok">● vendiendo aquí</span> ' : ''}<span class="pill ${e.estado === 'Activo' ? 'ok' : e.estado === 'Cerrado' ? 'gray' : 'warn'}">${e.estado}</span></div></div>
       <table class="t" style="margin:10px 0"><tr><td>Venta bruta</td><td class="n">${money(r.venta)}</td></tr><tr><td>(−) Pago a Fabiola</td><td class="n">${money(r.fab)}</td></tr>
       <tr><td class="b">Margen bruto</td><td class="n b">${money(r.margen)}</td></tr><tr><td>(−) Gastos</td><td class="n">${money(r.gastos)}</td></tr>
       <tr class="tot"><td>Utilidad neta</td><td class="n ${r.utilidad < 0 ? 'neg' : 'pos'}">${money(r.utilidad)}</td></tr></table>
       <div class="small muted" style="margin-bottom:8px">${int(r.piezas)} piezas · ${r.tickets.size} ventas${r.consumo.piezas ? ` · ${int(r.consumo.piezas)} de consumo propio` : ''}</div>
-      <div class="row">${e.estado !== 'Cerrado' && e.id !== act ? `<button class="btn sm pri" data-a="activarEvento" data-e="${e.id}">▶ Vender aquí</button>` : ''}
+      <div class="row">${e.estado !== 'Cerrado' && e.id !== actDe(e) ? `<button class="btn sm pri" data-a="activarEvento" data-e="${e.id}">▶ Vender aquí</button>` : ''}
         <button class="btn sm ghost" data-a="editarEvento" data-e="${e.id}">✏️ Editar</button>
         ${e.estado !== 'Cerrado' ? `<button class="btn sm ghost" data-a="cerrarEvento" data-e="${e.id}">🔒 Cerrar</button>` : `<button class="btn sm ghost" data-a="reabrirEvento" data-e="${e.id}">🔓 Reabrir</button>`}
         <button class="btn sm ghost" data-a="verResultados" data-e="${e.id}">📊 Resultados</button></div></div>`; }).join('')}</div>`
     : '<div class="card empty">Todavía no hay eventos. Crea el primero (feria, mercadito, venta digital…).</div>'}`;
 };
-A.nuevoEvento = () => editarEvento(null);
-A.editarEvento = el => editarEvento(el.dataset.e);
-A.activarEvento = async el => { const e = IDX.ev.get(el.dataset.e); if (e.estado === 'Planeado'){ e.estado = 'Activo'; await put('eventos', e); } await saveConfig({evento_activo_id:e.id}); toast(`Vendiendo en: ${e.nombre}`); rerender(); };
+A.nuevoEvento = () => { if (requiereSede()) editarEvento(null); };
+A.editarEvento = el => { if (requiereSede()) editarEvento(el.dataset.e); };
+A.activarEvento = async el => {
+  const e = IDX.ev.get(el.dataset.e); if (e.estado === 'Planeado'){ e.estado = 'Activo'; await put('eventos', e); }
+  await setEventoActivo(e.sede_codigo, e.id);
+  if (vista() !== e.sede_codigo){ await saveConfig({sede_activa:e.sede_codigo}); aplicarSedeVisual(); renderNav(); }
+  toast(`Vendiendo en: ${esc(e.nombre)} (${esc(sedeNombre(e.sede_codigo))})`); rerender(); };
 A.verResultados = el => { UI.rf = {ev:el.dataset.e, desde:'', hasta:''}; go('resultados'); };
 A.reabrirEvento = async el => { const e = IDX.ev.get(el.dataset.e); e.estado = 'Activo'; await put('eventos', e); rerender(); };
 A.cerrarEvento = async el => {
   const e = IDX.ev.get(el.dataset.e);
   if (!await confirmDlg({titulo:'¿Cerrar evento?', msg:`"${esc(e.nombre)}" ya no aparecerá en Vender. Puedes reabrirlo después.`, ok:'Sí, cerrar'})) return;
   e.estado = 'Cerrado'; if (!e.fecha_fin) e.fecha_fin = localDate(); await put('eventos', e);
-  if (S.config.evento_activo_id === e.id) await saveConfig({evento_activo_id:null});
+  if ((S.config.eventos_activos || {})[e.sede_codigo] === e.id) await setEventoActivo(e.sede_codigo, null);
   rerender();
   if (await confirmDlg({titulo:'💾 ¿Guardar respaldo ahora?', msg:'Cerraste un evento. Es buen momento para guardar un respaldo y no perder nada.', ok:'💾 Guardar respaldo', cancel:'Después'})){ await guardarRespaldo(!!navigator.canShare); toast('✅ Respaldo guardado'); rerender(); }
 };
 function editarEvento(eid, {rapido = false} = {}){
   const e = eid ? {...IDX.ev.get(eid)} : {nombre: rapido ? `Venta ${fdate(localDate())}` : '', tipo:'Mercadito', fecha_inicio:localDate(), fecha_fin:localDate(), costo_lugar:0, estado: rapido ? 'Activo' : 'Planeado'};
-  const m = modal(`${mhead(eid ? 'Editar evento' : 'Nuevo evento')}<div class="grid g2">
+  const m = modal(`${mhead((eid ? 'Editar evento' : 'Nuevo evento') + ' · ' + esc(sedeNombre(e.sede_codigo || vista())))}<div class="grid g2">
     <label class="f">Nombre *<input type="text" id="en" value="${esc(e.nombre)}" placeholder="Ej. Mercadito Jurica" autofocus></label>
     <label class="f">Tipo<select id="et">${TIPOS_EVENTO.map(t => opt(t, t, e.tipo)).join('')}</select></label>
     <label class="f">Fecha de inicio<input type="date" id="ei" value="${e.fecha_inicio || ''}"></label>
@@ -1453,9 +1628,9 @@ function editarEvento(eid, {rapido = false} = {}){
     const gl = S.gastos.find(g => g.evento_id === e.id && g.auto_lugar);
     const gastos = [];
     if (gl){ if (num(gl.monto) !== e.costo_lugar){ if (e.costo_lugar) gastos.push({...gl, monto:e.costo_lugar}); else await del('gastos', gl.id); } }
-    else if (e.costo_lugar) gastos.push({id:uuid(), fecha:e.fecha_inicio || localDate(), evento_id:e.id, categoria:'Lugar / cuota', monto:e.costo_lugar, descripcion:'Costo del lugar', pagado_por:'', es_inversion_inicial:false, auto_lugar:true});
+    else if (e.costo_lugar) gastos.push({id:uuid(), sede_codigo:e.sede_codigo || vista(), fecha:e.fecha_inicio || localDate(), evento_id:e.id, categoria:'Lugar / cuota', monto:e.costo_lugar, descripcion:'Costo del lugar', pagado_por:'', es_inversion_inicial:false, auto_lugar:true});
     await putMany({eventos:[e], gastos});
-    if (e.estado !== 'Cerrado' && (rapido || !eventoActivo())) await saveConfig({evento_activo_id:e.id});
+    if (e.estado !== 'Cerrado' && (rapido || !eventoActivo(e.sede_codigo))) await setEventoActivo(e.sede_codigo, e.id);
     closeModal(); toast('✅ Evento guardado'); rerender();
   };
   if ($('#edel', m)) $('#edel', m).onclick = async () => {
@@ -1463,7 +1638,7 @@ function editarEvento(eid, {rapido = false} = {}){
     if (nm || ng){ alertDlg('No se puede borrar', `Este evento tiene ${nm} movimiento(s) y ${ng} gasto(s). Ciérralo en lugar de borrarlo.`); return; }
     if (!await confirmDlg({titulo:'¿Borrar evento?', msg:esc(e.nombre), ok:'Sí, borrar', danger:true})) return;
     await del('gastos', S.gastos.filter(g => g.evento_id === eid).map(g => g.id)); await del('eventos', eid);
-    if (S.config.evento_activo_id === eid) await saveConfig({evento_activo_id:null});
+    if ((S.config.eventos_activos || {})[e.sede_codigo] === eid) await setEventoActivo(e.sede_codigo, null);
     closeModal(); rerender();
   };
 }
@@ -1474,7 +1649,7 @@ function editarEvento(eid, {rapido = false} = {}){
 SCREENS.gastos = () => {
   const ev = eventoActivo(); const f = UI.gf;
   return `${topbar('Gastos')}
-  <div class="card"><h2>➕ Registrar gasto</h2>
+  ${esTodas() ? '<div class="card alert info">Para registrar un gasto, elige una sede arriba. Aquí puedes consultar los gastos de todas las sedes.</div>' : `<div class="card"><h2>➕ Registrar gasto en ${esc(sedeNombre(vista()))}</h2>
     <div class="grid g2">
       <label class="f">Monto *<input type="number" inputmode="decimal" id="gm" placeholder="$0.00" style="font-size:1.4rem;font-weight:800"></label>
       <label class="f">Evento<select id="ge">${eventosOpts(ev?.id || '', {ninguno:'Gasto general (sin evento)'})}</select></label>
@@ -1486,7 +1661,7 @@ SCREENS.gastos = () => {
       <label class="f">Fecha<input type="date" id="gf" value="${localDate()}"></label>
     </div>
     <div class="row between" style="margin-top:10px"><label class="chk"><input type="checkbox" id="gi"> Es inversión inicial (se usa en varios eventos, ej. exhibidores)</label><button class="btn pri big" data-a="guardarGasto">Guardar gasto</button></div>
-  </div>
+  </div>`}
   <div class="card"><h2>Lista de gastos</h2>
     <div class="grid g4">
       <label class="f">Evento<select data-c="gfe">${opt('', 'Todos', f.ev)}${opt('__general', 'Solo generales', f.ev)}${eventosOpts(f.ev, {todos:null})}</select></label>
@@ -1500,12 +1675,12 @@ SCREENS.gastos = () => {
 SCREENS.gastos_after = () => renderGastosTabla();
 function gastosFiltrados(){
   const f = UI.gf;
-  return S.gastos.filter(g => (!f.ev || (f.ev === '__general' ? !g.evento_id : g.evento_id === f.ev)) && (!f.cat || g.categoria === f.cat) && (!f.desde || g.fecha >= f.desde) && (!f.hasta || g.fecha <= f.hasta)).sort((a,b) => (b.fecha || '').localeCompare(a.fecha || ''));
+  return S.gastos.filter(g => enSede(g) && (!f.ev || (f.ev === '__general' ? !g.evento_id : g.evento_id === f.ev)) && (!f.cat || g.categoria === f.cat) && (!f.desde || g.fecha >= f.desde) && (!f.hasta || g.fecha <= f.hasta)).sort((a,b) => (b.fecha || '').localeCompare(a.fecha || ''));
 }
 function renderGastosTabla(){
   const gs = gastosFiltrados();
   $('#gtab').innerHTML = `<table class="t"><thead><tr><th>Fecha</th><th>Evento</th><th>Categoría</th><th>Descripción</th><th>Pagó</th><th class="n">Monto</th><th></th></tr></thead><tbody>
-    ${gs.map(g => `<tr><td>${fdate(g.fecha)}</td><td class="small">${esc(IDX.ev.get(g.evento_id)?.nombre || 'General')}</td><td>${esc(g.categoria)}${g.es_inversion_inicial ? ' <span class="pill">inversión</span>' : ''}</td><td class="small">${esc(g.descripcion)}</td><td class="small">${esc(g.pagado_por)}</td><td class="n b">${money(g.monto)}</td>
+    ${gs.map(g => `<tr><td>${esTodas() ? sedeTag(g.sede_codigo) + ' ' : ''}${fdate(g.fecha)}</td><td class="small">${esc(IDX.ev.get(g.evento_id)?.nombre || 'General')}</td><td>${esc(g.categoria)}${g.es_inversion_inicial ? ' <span class="pill">inversión</span>' : ''}</td><td class="small">${esc(g.descripcion)}</td><td class="small">${esc(g.pagado_por)}</td><td class="n b">${money(g.monto)}</td>
       <td class="right"><button class="btn sm ghost" style="min-height:38px" data-a="editGasto" data-g="${g.id}">✏️</button> <button class="btn sm ghost" style="min-height:38px" data-a="borrarGasto" data-g="${g.id}">🗑️</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty">Sin gastos</td></tr>'}
     <tr class="tot"><td colspan="5">${gs.length} gasto(s)</td><td class="n">${money(sum(gs, g => g.monto))}</td><td></td></tr></tbody></table>`;
 }
@@ -1513,17 +1688,20 @@ A.gcat = el => { UI.gcat = el.dataset.v; $$('[data-a="gcat"]').forEach(b => b.cl
 C.gfe = el => { UI.gf.ev = el.value; renderGastosTabla(); }; C.gfc = el => { UI.gf.cat = el.value; renderGastosTabla(); };
 C.gfd = el => { UI.gf.desde = el.value; renderGastosTabla(); }; C.gfh = el => { UI.gf.hasta = el.value; renderGastosTabla(); };
 A.guardarGasto = async () => {
+  if (!requiereSede()) return;
   const monto = num(val('#gm')); if (monto <= 0){ toast('Escribe el monto del gasto.'); $('#gm').focus(); return; }
   await put('gastos', {id:uuid(), fecha:val('#gf') || localDate(), evento_id:val('#ge') || null, categoria:UI.gcat, monto, descripcion:val('#gd').trim(), pagado_por:val('#gp').trim(), es_inversion_inicial:$('#gi').checked});
   toast(`✅ Gasto guardado: ${money(monto)}`); $('#gm').value = ''; $('#gd').value = ''; $('#gi').checked = false; renderGastosTabla();
 };
 A.borrarGasto = async el => {
+  if (!requiereSede()) return;
   const g = S.gastos.find(x => x.id === el.dataset.g);
   if (!await confirmDlg({titulo:'¿Borrar gasto?', msg:`${esc(g.categoria)} · ${money(g.monto)} · ${fdate(g.fecha)}`, ok:'Sí, borrar', danger:true})) return;
   if (g.auto_lugar){ const e = IDX.ev.get(g.evento_id); if (e){ e.costo_lugar = 0; await put('eventos', e); } }
   await del('gastos', g.id); toast('Gasto borrado'); renderGastosTabla();
 };
 A.editGasto = el => {
+  if (!requiereSede()) return;
   const g = {...S.gastos.find(x => x.id === el.dataset.g)};
   const m = modal(`${mhead('Editar gasto')}<div class="grid g2">
     <label class="f">Monto<input type="number" inputmode="decimal" id="xm" value="${g.monto}"></label>
@@ -1559,10 +1737,25 @@ function estadoResultadosHTML(r, cls = 't'){
     <tr class="tot"><td>UTILIDAD NETA</td><td class="n ${r.utilidad < 0 ? 'neg' : 'pos'}">${money(r.utilidad)}</td></tr>
   </tbody></table>`;
 }
+/* estado de resultados con una columna por sede y el total */
+function estadoConsolidado(f){
+  const sc = sedesCodigos();
+  const all = [...sc.map(c => resultados({sede:c, desde:f.desde, hasta:f.hasta})), resultados({sede:TODAS, desde:f.desde, hasta:f.hasta})];
+  const cats = [...new Set(all.flatMap(r => Object.keys(r.gastosCat)))];
+  const fila = (t, fn, cls) => ({c:[t, ...all.map(fn)], cls});
+  const rows = [fila('Venta a precio de lista', r => r.ventaLista), fila('(−) Descuentos', r => r.descuentos), fila('Venta bruta', r => r.venta, 'tot'),
+    fila('   de ello consumo propio', r => r.consumo.venta), fila('(−) Pago a fabricante', r => r.fab), fila('Margen bruto', r => r.margen, 'tot'),
+    ...cats.map(c => fila('(−) ' + c, r => r.gastosCat[c] || 0)), fila('Total de gastos', r => r.gastos), fila('UTILIDAD NETA', r => r.utilidad, 'tot')];
+  return {cols:[{t:'Concepto'}, ...sc.map(c => ({t:sedeNombre(c), f:'money'})), {t:'Total', f:'money'}], rows, all};
+}
+function tablaHTML(t){
+  return `<div class="tw"><table class="t"><thead><tr>${t.cols.map(k => `<th class="${k.f ? 'n' : ''}">${esc(k.t)}</th>`).join('')}</tr></thead><tbody>
+    ${t.rows.map(r => `<tr class="${r.cls || ''}">${r.c.map((v, i) => `<td class="${t.cols[i].f ? 'n' : ''}${t.cols[i].f === 'money' && num(v) < 0 ? ' neg' : ''}">${fmtCell(v, t.cols[i].f)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
 SCREENS.resultados = () => {
   const f = UI.rf; const r = resultados({evento_id:f.ev || null, desde:f.desde, hasta:f.hasta});
   const ev = IDX.ev.get(f.ev);
-  const comp = S.eventos.map(e => { const x = resultados({evento_id:e.id}); const d = eventoDias(e); return {e, x, d}; }).filter(c => c.x.piezas || c.x.gastos).sort((a,b) => b.x.utilidad - a.x.utilidad);
+  const comp = S.eventos.filter(e => enSede(e)).map(e => { const x = resultados({evento_id:e.id}); const d = eventoDias(e); return {e, x, d}; }).filter(c => c.x.piezas || c.x.gastos).sort((a,b) => b.x.utilidad - a.x.utilidad);
   const porProd = topProductos(r.movs).slice(0, 10);
   const porCat = [...groupBy(r.movs, m => IDX.prod.get(m.producto_id)?.categoria || '—')].map(([c, ms]) => ({c, piezas:sum(ms, vendidas), venta:sum(ms, ventaLinea), margen:sum(ms, m => ventaLinea(m) - fabLinea(m))})).sort((a,b) => b.venta - a.venta);
   const vendidosIds = new Set(r.movs.map(m => m.producto_id));
@@ -1580,14 +1773,14 @@ SCREENS.resultados = () => {
   </div>
   <div class="grid g2" style="margin-top:14px">
     <div class="card"><div class="row between"><h2>Estado de resultados</h2><button class="btn sm ghost" data-a="repER">🖨️ Imprimir</button></div>
-      <div class="small muted" style="margin-bottom:8px">${ev ? esc(ev.nombre) : 'Todos los eventos y gastos generales'}${f.desde || f.hasta ? ` · ${fdate(f.desde) || 'inicio'} a ${fdate(f.hasta) || 'hoy'}` : ''}</div>
-      ${estadoResultadosHTML(r)}
+      <div class="small muted" style="margin-bottom:8px">${esc(esTodas() && !ev ? 'Consolidado de todas las sedes' : sedeNombre(ev ? ev.sede_codigo : vista()))} · ${ev ? esc(ev.nombre) : 'Todos los eventos y gastos generales'}${f.desde || f.hasta ? ` · ${fdate(f.desde) || 'inicio'} a ${fdate(f.hasta) || 'hoy'}` : ''}</div>
+      ${esTodas() && !ev ? tablaHTML(estadoConsolidado(f)) : estadoResultadosHTML(r)}
       ${Object.keys(r.porMetodo).length ? `<h3 style="margin-top:14px">Por forma de pago</h3><table class="t">${Object.entries(r.porMetodo).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${money(v)}</td></tr>`).join('')}</table>` : ''}
       ${r.inversion ? `<div class="small muted" style="margin-top:8px">Incluye ${money(r.inversion)} de inversión inicial (exhibidores, etc.).</div>` : ''}
     </div>
     <div class="card"><h2>Comparativo entre eventos</h2>
       ${comp.length ? `<div class="tw"><table class="t"><thead><tr><th>Evento</th><th class="n">Días</th><th class="n">Venta</th><th class="n">Utilidad</th><th class="n">Venta/día</th><th class="n">Utilidad/día</th></tr></thead><tbody>
-      ${comp.map((c, i) => `<tr class="click" data-a="verResultados" data-e="${c.e.id}"><td>${i === 0 && c.x.utilidad > 0 ? '🏆 ' : ''}${esc(c.e.nombre)}</td><td class="n">${c.d}</td><td class="n">${money(c.x.venta)}</td><td class="n ${c.x.utilidad < 0 ? 'neg' : 'pos'}">${money(c.x.utilidad)}</td><td class="n">${money(c.x.venta / c.d)}</td><td class="n">${money(c.x.utilidad / c.d)}</td></tr>`).join('')}
+      ${comp.map((c, i) => `<tr class="click" data-a="verResultados" data-e="${c.e.id}"><td>${i === 0 && c.x.utilidad > 0 ? '🏆 ' : ''}${esTodas() ? sedeTag(c.e.sede_codigo) + ' ' : ''}${esc(c.e.nombre)}</td><td class="n">${c.d}</td><td class="n">${money(c.x.venta)}</td><td class="n ${c.x.utilidad < 0 ? 'neg' : 'pos'}">${money(c.x.utilidad)}</td><td class="n">${money(c.x.venta / c.d)}</td><td class="n">${money(c.x.utilidad / c.d)}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="muted">Aún no hay eventos con ventas.</div>'}
       <h3 style="margin-top:14px">Categorías más vendidas</h3>
       <table class="t"><thead><tr><th>Categoría</th><th class="n">Piezas</th><th class="n">Venta</th><th class="n">Margen</th></tr></thead><tbody>${porCat.map(c => `<tr><td>${esc(c.c)}</td><td class="n">${int(c.piezas)}</td><td class="n">${money(c.venta)}</td><td class="n">${money(c.margen)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Sin ventas</td></tr>'}</tbody></table>
@@ -1604,7 +1797,7 @@ function topProductos(movs){
   return [...groupBy(movs, m => m.producto_id)].map(([pid, ms]) => ({p:IDX.prod.get(pid), piezas:sum(ms, vendidas), venta:sum(ms, ventaLinea), fab:sum(ms, fabLinea), margen:sum(ms, m => ventaLinea(m) - fabLinea(m))})).sort((a,b) => b.piezas - a.piezas || b.venta - a.venta);
 }
 C.rfe = el => { UI.rf.ev = el.value; rerender(); }; C.rfd = el => { UI.rf.desde = el.value; rerender(); }; C.rfh = el => { UI.rf.hasta = el.value; rerender(); };
-A.repER = () => abrirReporte('resultados', {ev:UI.rf.ev, desde:UI.rf.desde, hasta:UI.rf.hasta});
+A.repER = () => abrirReporte('resultados', {ev:UI.rf.ev, desde:UI.rf.desde, hasta:UI.rf.hasta, sede:vista()});
 
 /* =========================================================================
    CALCULADORA DE UTILIDAD (no guarda datos)
@@ -1701,10 +1894,11 @@ const REPORTES = [
   ['gastosEvento','💸','Gastos por evento',''],
   ['gastosCategoria','🗃️','Gastos por categoría',''],
   ['resultados','📊','Estado de resultados','Del evento, periodo o acumulado'],
-  ['pendienteAlika','🤝','Ventas pendientes de pagar a Alika','Preliminar de corte, con firmas'],
+  ['pendienteAlika','🤝','Ventas pendientes de pagar a Alika','Lo que todavía no está en un corte'],
+  ['cortesLista','📑','Cortes con Alika','Lista de cortes, pagados y pendientes'],
   ['consumo','👪','Consumo propio','Piezas que se quedó la familia'],
 ];
-SCREENS.reportes = () => `${topbar('Reportes')}<div class="alert info">Todos los reportes se pueden imprimir / guardar como PDF (tamaño carta) y exportar a CSV para Excel.</div>
+SCREENS.reportes = () => `${topbar('Reportes')}<div class="alert info">Todos los reportes se pueden imprimir / guardar como PDF (tamaño carta) y exportar a CSV para Excel. Cada reporte se puede sacar por sede o <b>consolidado</b> (columnas por ciudad y total).</div>
   <div class="grid g3">${REPORTES.map(([k, ic, t, d]) => `<button class="card btn ghost" style="flex-direction:column;align-items:flex-start;text-align:left;height:auto;min-height:100px" data-a="rep" data-r="${k}"><span style="font-size:1.6rem">${ic}</span><span>${t}</span><span class="small muted" style="font-weight:500">${d}</span></button>`).join('')}</div>`;
 A.rep = el => abrirReporte(el.dataset.r);
 A.repKardex = el => abrirReporte('kardex', {vid:el.dataset.v});
@@ -1714,25 +1908,37 @@ function fmtCell(v, f){ if (v == null || v === '') return ''; if (f === 'money')
 function repHTML(rep){
   const c = S.config;
   return `<div class="rep"><div class="rep-head"><div class="t1">Alika · ${esc(rep.titulo)}</div>
-    <div class="t2">Sede: ${esc(c.sede_nombre)} (${esc(c.sede_codigo)}) · Fecha: ${fdt(nowISO())} · Responsable: ${esc(c.responsable || '—')} · Montos en MXN${rep.sub ? '<br>' + rep.sub : ''}</div></div>
+    <div class="t2">Sede: ${rep.sede === TODAS ? 'Consolidado (todas las sedes)' : esc(sedeNombre(rep.sede || vista())) + ' (' + esc(rep.sede || vista()) + ')'} · Fecha: ${fdt(nowISO())} · Responsable: ${esc(c.responsable || '—')} · Montos en MXN${rep.sub ? '<br>' + rep.sub : ''}</div></div>
     ${rep.pre || ''}
     ${rep.cols ? `<table><thead><tr>${rep.cols.map(k => `<th class="${['money','int','pct'].includes(k.f) ? 'n' : ''}">${esc(k.t)}</th>`).join('')}</tr></thead><tbody>
     ${rep.rows.map(r => `<tr class="${r.cls || ''}">${r.c.map((v, i) => `<td class="${['money','int','pct'].includes(rep.cols[i].f) ? 'n' : ''}">${fmtCell(v, rep.cols[i].f)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${rep.cols.length}">Sin datos</td></tr>`}
     </tbody></table>` : ''}${rep.extra || ''}</div>`;
 }
 function repCSV(rep){ return toCSV([rep.cols.map(c => c.t), ...rep.rows.map(r => r.c.map(v => v == null ? '' : (typeof v === 'number' ? r2(v) : v)))]); }
-function filtroVentas(f){ return S.movimientos.filter(m => esVentaMov(m) && (!f.ev || m.evento_id === f.ev) && (!f.desde || dayOf(m.fecha_hora) >= f.desde) && (!f.hasta || dayOf(m.fecha_hora) <= f.hasta)); }
+function filtroVentas(f){ return S.movimientos.filter(m => esVentaMov(m) && enSede(m, f.sede || vista()) && (!f.ev || m.evento_id === f.ev) && (!f.desde || dayOf(m.fecha_hora) >= f.desde) && (!f.hasta || dayOf(m.fecha_hora) <= f.hasta)); }
+/* tabla con una columna por sede y el total para cada métrica. items deben traer su sede (sede_codigo) */
+function tablaPorSede(items, {sedeFn = x => x.sede_codigo, keyFn, keyCells, keyCols, metrics, totalLabel = 'TOTAL'}){
+  const sc = sedesCodigos(); const map = new Map();
+  for (const it of items){ const k = keyFn(it); if (!map.has(k)) map.set(k, {cells:keyCells(it), v:{}}); const row = map.get(k); const sd = sedeFn(it);
+    metrics.forEach((mt, i) => { const key = i + '|' + sd; row.v[key] = (row.v[key] || 0) + num(mt.val(it)); }); }
+  const vals = r => metrics.flatMap((mt, i) => { const vs = sc.map(c => r.v[i + '|' + c] || 0); return [...vs, sum(vs)]; });
+  const cols = [...keyCols, ...metrics.flatMap(mt => [...sc.map(c => ({t:`${mt.t} ${c}`, f:mt.f})), {t:`${mt.t} total`, f:mt.f}])];
+  const rows = [...map.values()].filter(r => Object.values(r.v).some(x => x)).map(r => ({c:[...r.cells, ...vals(r)]}));
+  const tot = {v:{}}; for (const r of map.values()) for (const [k, x] of Object.entries(r.v)) tot.v[k] = (tot.v[k] || 0) + x;
+  rows.push({c:[totalLabel, ...keyCols.slice(1).map(() => ''), ...vals(tot)], cls:'tot'});
+  return {cols, rows};
+}
 function subFiltro(f){ return [f.ev ? 'Evento: ' + esc(IDX.ev.get(f.ev)?.nombre) : '', f.cat ? 'Categoría: ' + esc(f.cat) : '', f.desde || f.hasta ? `Periodo: ${fdate(f.desde) || 'inicio'} a ${fdate(f.hasta) || 'hoy'}` : ''].filter(Boolean).join(' · '); }
 
-const REP = {
+const REP1 = {
   inventario(f){
     const cols = [{t:'Clave'},{t:'Producto'},{t:'Color'},{t:'Stand',f:'int'},{t:'Casa',f:'int'},{t:'Existencia',f:'int'},{t:'Precio fab.',f:'money'},{t:'Valor consignación',f:'money'},{t:'Precio venta',f:'money'}];
     const rows = []; let tp = 0, tv = 0;
-    const vs = S.variantes.map(v => ({v, p:IDX.prod.get(v.producto_id), s:stockOf(v.id)})).filter(x => x.p && (!f.cat || x.p.categoria === f.cat) && (!f.solo || x.s.total > 0));
+    const vs = S.variantes.map(v => ({v, p:IDX.prod.get(v.producto_id), s:stockOf(v.id, f.sede)})).filter(x => x.p && (!f.cat || x.p.categoria === f.cat) && (!f.solo || x.s.total > 0));
     for (const [cat, xs] of [...groupBy(vs, x => x.p.categoria)].sort((a,b) => a[0].localeCompare(b[0]))){
       rows.push({c:[cat,'','','','','','','',''], cls:'grp'});
       xs.sort((a,b) => a.p.nombre.localeCompare(b.p.nombre) || a.v.color.localeCompare(b.v.color));
-      for (const {v,p,s} of xs) rows.push({c:[p.clave, p.nombre, v.color, s.Stand, s.Casa || '', s.total, p.precio_fabricante, s.total * num(p.precio_fabricante), p.precio_venta]});
+      for (const {v,p,s} of xs) rows.push({c:[p.clave, p.nombre, v.color, s.Stand, s.Casa || '', s.total, p.precio_fabricante, s.total * num(p.precio_fabricante), precioVenta(p, f.sede)]});
       const sp = sum(xs, x => x.s.total), sv = sum(xs, x => x.s.total * num(x.p.precio_fabricante)); tp += sp; tv += sv;
       rows.push({c:['Subtotal ' + cat,'','','','',sp,'',sv,''], cls:'tot'});
     }
@@ -1745,7 +1951,7 @@ const REP = {
     const vs = S.variantes.map(v => ({v, p:IDX.prod.get(v.producto_id)})).filter(x => x.p && x.p.activo !== false && (!f.cat || x.p.categoria === f.cat));
     for (const [cat, xs] of [...groupBy(vs, x => x.p.categoria)].sort((a,b) => a[0].localeCompare(b[0]))){
       rows.push({c:[cat,'','','','',''], cls:'grp'});
-      xs.sort((a,b) => a.p.nombre.localeCompare(b.p.nombre) || a.v.color.localeCompare(b.v.color)).forEach(({v,p}) => rows.push({c:[p.clave, p.nombre, v.color, stockOf(v.id).total, '', '']}));
+      xs.sort((a,b) => a.p.nombre.localeCompare(b.p.nombre) || a.v.color.localeCompare(b.v.color)).forEach(({v,p}) => rows.push({c:[p.clave, p.nombre, v.color, stockOf(v.id, f.sede).total, '', '']}));
     }
     return {titulo:'Hoja de conteo físico', sub:subFiltro(f) + ' · Contó: ____________________', cols, rows, extra:`<div class="firmas"><div>Contó</div><div>Revisó</div></div>`};
   },
@@ -1753,7 +1959,7 @@ const REP = {
     const vids = f.vid ? [f.vid] : f.pid ? (IDX.varsByProd.get(f.pid) || []).map(v => v.id) : [];
     const cols = [{t:'Fecha'},{t:'Color'},{t:'Tipo'},{t:'Detalle'},{t:'Movimiento',f:'int'},{t:'Saldo',f:'int'}];
     const rows = [];
-    for (const vid of vids){ const v = IDX.vari.get(vid); kardexRows(vid).forEach(({m, d, saldo}) => rows.push({c:[fdt(m.fecha_hora), v.color, TIPO_MOV_TXT[m.tipo], [IDX.ev.get(m.evento_id)?.nombre, esVentaMov(m) ? money(m.precio_venta_unit) : '', m.motivo, m.persona, m.nota].filter(Boolean).join(' · '), m.tipo === 'TRASPASO' ? 0 : d, saldo]})); rows.push({c:['', v.color, 'EXISTENCIA', '', '', stockOf(vid).total], cls:'tot'}); }
+    for (const vid of vids){ const v = IDX.vari.get(vid); kardexRows(vid, f.sede).forEach(({m, d, saldo}) => rows.push({c:[fdt(m.fecha_hora), v.color, (f.sede === TODAS ? m.sede_codigo + ' · ' : '') + TIPO_MOV_TXT[m.tipo], detalleMov(m), m.tipo === 'TRASPASO' ? 0 : d, saldo]})); rows.push({c:['', v.color, 'EXISTENCIA', '', '', stockOf(vid, f.sede).total], cls:'tot'}); }
     const p = f.vid ? prodOfVar(f.vid) : IDX.prod.get(f.pid);
     return {titulo:'Kárdex', sub: p ? `${esc(p.clave)} · ${esc(p.nombre)}${f.vid ? ' · ' + esc(IDX.vari.get(f.vid).color) : ' (todos los colores)'}` : 'Elige un producto', cols, rows};
   },
@@ -1764,10 +1970,13 @@ const REP = {
     return {titulo:'Ventas por día', sub:subFiltro(f), cols, rows};
   },
   ventasEvento(f){
-    const cols = [{t:'Evento'},{t:'Fechas'},{t:'Piezas',f:'int'},{t:'Venta bruta',f:'money'},{t:'Pago a fabricante',f:'money'},{t:'Margen',f:'money'},{t:'Gastos',f:'money'},{t:'Utilidad',f:'money'}];
-    const rows = S.eventos.slice().sort((a,b) => (a.fecha_inicio || '').localeCompare(b.fecha_inicio || '')).map(e => { const r = resultados({evento_id:e.id, desde:f.desde, hasta:f.hasta}); return {c:[e.nombre, fdate(e.fecha_inicio) + (e.fecha_fin && e.fecha_fin !== e.fecha_inicio ? ' – ' + fdate(e.fecha_fin) : ''), r.piezas, r.venta, r.fab, r.margen, r.gastos, r.utilidad], r}; }).filter(x => x.r.piezas || x.r.gastos);
-    const T = k => sum(rows, x => x.r[k]);
-    rows.push({c:['TOTAL','',T('piezas'),T('venta'),T('fab'),T('margen'),T('gastos'),T('utilidad')], cls:'tot'});
+    const cols = [{t:'Sede'},{t:'Evento'},{t:'Fechas'},{t:'Piezas',f:'int'},{t:'Venta bruta',f:'money'},{t:'Pago a fabricante',f:'money'},{t:'Margen',f:'money'},{t:'Gastos',f:'money'},{t:'Utilidad',f:'money'}];
+    const ev = S.eventos.filter(e => enSede(e, f.sede)).sort((a,b) => (a.sede_codigo || '').localeCompare(b.sede_codigo || '') || (a.fecha_inicio || '').localeCompare(b.fecha_inicio || '')).map(e => { const r = resultados({evento_id:e.id, desde:f.desde, hasta:f.hasta}); return {c:[e.sede_codigo, e.nombre, fdate(e.fecha_inicio) + (e.fecha_fin && e.fecha_fin !== e.fecha_inicio ? ' – ' + fdate(e.fecha_fin) : ''), r.piezas, r.venta, r.fab, r.margen, r.gastos, r.utilidad], r, s:e.sede_codigo}; }).filter(x => x.r.piezas || x.r.gastos);
+    const T = (xs, k) => sum(xs, x => x.r[k]);
+    const fila = (t, xs, cls) => ({c:[t,'','',T(xs,'piezas'),T(xs,'venta'),T(xs,'fab'),T(xs,'margen'),T(xs,'gastos'),T(xs,'utilidad')], cls});
+    const rows = [];
+    if (f.sede === TODAS){ for (const [sd, xs] of groupBy(ev, x => x.s)){ rows.push(...xs, fila('Subtotal ' + sd, xs, 'tot')); } } else rows.push(...ev);
+    rows.push(fila('TOTAL', ev, 'tot'));
     return {titulo:'Ventas por evento', sub:subFiltro(f), cols, rows};
   },
   ventasProducto(f){
@@ -1779,17 +1988,18 @@ const REP = {
   },
   ventasDetalle(f){
     const movs = filtroVentas(f);
-    const cols = [{t:'Fecha'},{t:'Evento'},{t:'Tipo'},{t:'Producto'},{t:'Color'},{t:'Pzs',f:'int'},{t:'Precio',f:'money'},{t:'Desc.',f:'money'},{t:'Total',f:'money'},{t:'Fabricante',f:'money'},{t:'Pago'}];
-    const rows = movs.map(m => { const v = IDX.vari.get(m.variante_id), p = IDX.prod.get(m.producto_id); return {c:[fdt(m.fecha_hora), IDX.ev.get(m.evento_id)?.nombre || '', TIPO_MOV_TXT[m.tipo], p?.nombre, v?.color, vendidas(m), m.precio_venta_unit, m.descuento || 0, ventaLinea(m), fabLinea(m), m.tipo === 'CONSUMO_PROPIO' ? m.persona : m.metodo_pago]}; });
-    rows.push({c:['TOTAL','','','','',sum(movs, vendidas),'',sum(movs, m => m.descuento),sum(movs, ventaLinea),sum(movs, fabLinea),''], cls:'tot'});
+    const cols = [{t:'Fecha'},{t:'Sede'},{t:'Evento'},{t:'Tipo'},{t:'Producto'},{t:'Color'},{t:'Pzs',f:'int'},{t:'Precio',f:'money'},{t:'Desc.',f:'money'},{t:'Total',f:'money'},{t:'Fabricante',f:'money'},{t:'Pago'}];
+    const rows = movs.map(m => { const v = IDX.vari.get(m.variante_id), p = IDX.prod.get(m.producto_id); return {c:[fdt(m.fecha_hora), m.sede_codigo, IDX.ev.get(m.evento_id)?.nombre || '', TIPO_MOV_TXT[m.tipo], p?.nombre, v?.color, vendidas(m), m.precio_venta_unit, m.descuento || 0, ventaLinea(m), fabLinea(m), m.tipo === 'CONSUMO_PROPIO' ? m.persona : m.metodo_pago]}; });
+    rows.push({c:['TOTAL','','','','','',sum(movs, vendidas),'',sum(movs, m => m.descuento),sum(movs, ventaLinea),sum(movs, fabLinea),''], cls:'tot'});
     return {titulo:'Detalle de ventas', sub:subFiltro(f), cols, rows};
   },
   gastosEvento(f){
-    const gs = S.gastos.filter(g => (!f.ev || g.evento_id === f.ev) && (!f.desde || g.fecha >= f.desde) && (!f.hasta || g.fecha <= f.hasta));
+    const gs = S.gastos.filter(g => enSede(g, f.sede) && (!f.ev || g.evento_id === f.ev) && (!f.desde || g.fecha >= f.desde) && (!f.hasta || g.fecha <= f.hasta));
     const cols = [{t:'Fecha'},{t:'Categoría'},{t:'Descripción'},{t:'Pagó'},{t:'Monto',f:'money'}];
     const rows = [];
-    for (const [eid, xs] of [...groupBy(gs, g => g.evento_id || '')]){
-      rows.push({c:[IDX.ev.get(eid)?.nombre || 'Gastos generales','','','',''], cls:'grp'});
+    for (const [k, xs] of [...groupBy(gs, g => g.sede_codigo + '|' + (g.evento_id || ''))].sort((a,b) => a[0].localeCompare(b[0]))){
+      const eid = k.split('|')[1];
+      rows.push({c:[`[${xs[0].sede_codigo}] ` + (IDX.ev.get(eid)?.nombre || 'Gastos generales'),'','','',''], cls:'grp'});
       xs.sort((a,b) => (a.fecha || '').localeCompare(b.fecha || '')).forEach(g => rows.push({c:[fdate(g.fecha), g.categoria + (g.es_inversion_inicial ? ' (inversión)' : ''), g.descripcion, g.pagado_por, g.monto]}));
       rows.push({c:['Subtotal','','','',sum(xs, g => g.monto)], cls:'tot'});
     }
@@ -1797,7 +2007,7 @@ const REP = {
     return {titulo:'Gastos por evento', sub:subFiltro(f) + ' · Las comisiones de tarjeta se ven en el estado de resultados.', cols, rows};
   },
   gastosCategoria(f){
-    const gs = S.gastos.filter(g => (!f.ev || g.evento_id === f.ev) && (!f.desde || g.fecha >= f.desde) && (!f.hasta || g.fecha <= f.hasta));
+    const gs = S.gastos.filter(g => enSede(g, f.sede) && (!f.ev || g.evento_id === f.ev) && (!f.desde || g.fecha >= f.desde) && (!f.hasta || g.fecha <= f.hasta));
     const total = sum(gs, g => g.monto);
     const cols = [{t:'Categoría'},{t:'Núm. gastos',f:'int'},{t:'Monto',f:'money'},{t:'% del total',f:'pct'}];
     const rows = [...groupBy(gs, g => g.categoria)].map(([c, xs]) => ({c:[c, xs.length, sum(xs, g => g.monto), total ? sum(xs, g => g.monto) / total : 0]})).sort((a,b) => b.c[2] - a.c[2]);
@@ -1805,7 +2015,7 @@ const REP = {
     return {titulo:'Gastos por categoría', sub:subFiltro(f), cols, rows};
   },
   resultados(f){
-    const r = resultados({evento_id:f.ev || null, desde:f.desde, hasta:f.hasta});
+    const r = resultados({evento_id:f.ev || null, sede: f.ev ? TODAS : f.sede, desde:f.desde, hasta:f.hasta});
     const cols = [{t:'Concepto'},{t:'Monto',f:'money'}];
     const rows = [{c:['Venta a precio de lista', r.ventaLista]}, {c:['(−) Descuentos', r.descuentos]}, {c:['Venta bruta', r.venta], cls:'tot'}];
     if (r.consumo.piezas) rows.push({c:[`   de ello consumo propio (${r.consumo.piezas} pzs)`, r.consumo.venta]});
@@ -1821,24 +2031,110 @@ const REP = {
     const cols = [{t:'Clave'},{t:'Producto'},{t:'Color'},{t:'Piezas',f:'int'},{t:'Precio fab.',f:'money'},{t:'A pagar',f:'money'}];
     const rows = [...groupBy(movs, m => m.variante_id + '|' + m.precio_fabricante_unit)].map(([k, ms]) => { const v = IDX.vari.get(ms[0].variante_id), p = IDX.prod.get(ms[0].producto_id); return {c:[p?.clave, p?.nombre, v?.color, sum(ms, vendidas), ms[0].precio_fabricante_unit, sum(ms, fabLinea)]}; }).filter(x => x.c[3]).sort((a,b) => String(a.c[1]).localeCompare(String(b.c[1])));
     rows.push({c:['TOTAL A PAGAR A ALIKA','','',sum(movs, vendidas),'',sum(movs, fabLinea)], cls:'tot'});
-    return {titulo:'Ventas pendientes de pagar a Alika', sub:subFiltro(f) + ' · Incluye consumo propio. Preliminar: el registro formal de cortes está pendiente.', cols, rows, extra:`<div class="firmas"><div>Entrega (Alika · Fabiola)</div><div>Recibe (${esc(S.config.responsable || 'Responsable')})</div></div>`};
+    return {titulo:'Ventas pendientes de pagar a Alika', sub:subFiltro(f) + ' · Ventas (incluye consumo propio) que todavía no están en un corte.', cols, rows, extra:`<div class="firmas"><div>Entrega (Alika · Fabiola)</div><div>Recibe (${esc(S.config.responsable || 'Responsable')})</div></div>`};
   },
   consumo(f){
     const movs = filtroVentas(f).filter(m => m.tipo === 'CONSUMO_PROPIO');
-    const cols = [{t:'Fecha'},{t:'Persona'},{t:'Producto'},{t:'Color'},{t:'Piezas',f:'int'},{t:'Precio fab.',f:'money'},{t:'Total',f:'money'}];
-    const rows = movs.map(m => ({c:[fdt(m.fecha_hora), m.persona, IDX.prod.get(m.producto_id)?.nombre, IDX.vari.get(m.variante_id)?.color, m.cantidad, m.precio_fabricante_unit, fabLinea(m)]}));
-    rows.push({c:['TOTAL','','','',sum(movs, vendidas),'',sum(movs, fabLinea)], cls:'tot'});
+    const cols = [{t:'Fecha'},{t:'Sede'},{t:'Persona'},{t:'Producto'},{t:'Color'},{t:'Piezas',f:'int'},{t:'Precio fab.',f:'money'},{t:'Total',f:'money'}];
+    const rows = movs.map(m => ({c:[fdt(m.fecha_hora), m.sede_codigo, m.persona, IDX.prod.get(m.producto_id)?.nombre, IDX.vari.get(m.variante_id)?.color, m.cantidad, m.precio_fabricante_unit, fabLinea(m)]}));
+    rows.push({c:['TOTAL','','','','',sum(movs, vendidas),'',sum(movs, fabLinea)], cls:'tot'});
     return {titulo:'Consumo propio', sub:subFiltro(f) + ' · Se paga a Alika a precio de fabricante; margen $0.', cols, rows};
   },
+  cortesLista(f){
+    const cs = S.cortes.filter(c => f.sede === TODAS || c.sede_codigo === f.sede || c.sede_codigo === TODAS).filter(c => (!f.desde || dayOf(c.fecha_corte) >= f.desde) && (!f.hasta || dayOf(c.fecha_corte) <= f.hasta)).sort((a,b) => a.fecha_corte.localeCompare(b.fecha_corte));
+    const cols = [{t:'Folio'},{t:'Sede'},{t:'Fecha'},{t:'Periodo'},{t:'Piezas',f:'int'},{t:'A pagar',f:'money'},{t:'Devueltas',f:'int'},{t:'Estado'},{t:'Pago'}];
+    const rows = cs.map(c => ({c:[c.folio || '', c.sede_codigo === TODAS ? 'Conjunto' : c.sede_codigo, fdt(c.fecha_corte), `${fdate(c.periodo_desde) || 'inicio'} a ${fdate(c.periodo_hasta) || '—'}`, c.piezas, c.total_a_pagar_fabricante, c.piezas_devueltas, c.estado, c.fecha_pago ? fdate(c.fecha_pago) + (c.referencia ? ' · ' + c.referencia : '') : '']}));
+    rows.push({c:['TOTAL','','','',sum(cs, c => c.piezas),sum(cs, c => c.total_a_pagar_fabricante),sum(cs, c => c.piezas_devueltas),`Pendiente: ${money(sum(cs.filter(c => c.estado !== 'Pagado'), c => c.total_a_pagar_fabricante))}`,''], cls:'tot'});
+    return {titulo:'Cortes con Alika', sub:subFiltro(f), cols, rows};
+  },
+  /* comprobante de un corte */
+  corte(f){
+    const c = S.cortes.find(x => x.id === f.corte_id);
+    if (!c) return {titulo:'Comprobante de corte', sub:'No se encontró el corte.', cols:[{t:'—'}], rows:[]};
+    const T = c.sede_codigo === TODAS; const ids = new Set(c.movimiento_ids || []), dids = new Set(c.devolucion_ids || []);
+    const ventas = S.movimientos.filter(m => ids.has(m.id)), devs = S.movimientos.filter(m => dids.has(m.id));
+    const cols = [{t:'Clave'},{t:'Producto'},{t:'Color'}, ...(T ? [{t:'Sede'}] : []), {t:'Piezas',f:'int'},{t:'Precio fab.',f:'money'},{t:'A pagar',f:'money'}];
+    const rows = [...groupBy(ventas, m => m.variante_id + '|' + m.precio_fabricante_unit + (T ? '|' + m.sede_codigo : ''))].map(([k, ms]) => { const v = IDX.vari.get(ms[0].variante_id), p = IDX.prod.get(ms[0].producto_id);
+      return {c:[p?.clave, p?.nombre, v?.color, ...(T ? [ms[0].sede_codigo] : []), sum(ms, vendidas), ms[0].precio_fabricante_unit, sum(ms, fabLinea)]}; }).filter(x => x.c[T ? 4 : 3]).sort((a,b) => String(a.c[1]).localeCompare(String(b.c[1])));
+    rows.push({c:['TOTAL A PAGAR A ALIKA','','', ...(T ? [''] : []), sum(ventas, vendidas),'',sum(ventas, fabLinea)], cls:'tot'});
+    const porSede = T ? sedesCodigos().map(sd => `${esc(sedeNombre(sd))}: ${money(sum(ventas.filter(m => m.sede_codigo === sd), fabLinea))}`).join(' · ') : '';
+    const pre = `<table style="margin-bottom:10px"><tr><th>Folio</th><td>${esc(c.folio || '')} <span style="font-size:8pt;color:#666">(${esc(c.id.slice(0,8))})</span></td><th>Sede</th><td>${T ? 'Conjunto (todas las sedes)' : esc(sedeNombre(c.sede_codigo))}</td></tr>
+      <tr><th>Fecha del corte</th><td>${fdt(c.fecha_corte)}</td><th>Periodo</th><td>${fdate(c.periodo_desde) || 'desde el inicio'} al ${fdate(c.periodo_hasta) || '—'}</td></tr>
+      <tr><th>Estado</th><td><b>${esc(c.estado)}</b></td><th>Pago</th><td>${c.fecha_pago ? fdate(c.fecha_pago) + (c.referencia ? ' · Ref. ' + esc(c.referencia) : '') : '—'}</td></tr></table>`;
+    const devHTML = devs.length ? `<h3 style="margin-top:12px">Devoluciones a Alika incluidas</h3><table><thead><tr><th>Fecha</th>${T ? '<th>Sede</th>' : ''}<th>Producto</th><th>Color</th><th class="n">Piezas</th><th class="n">Valor fab.</th></tr></thead><tbody>
+      ${devs.map(m => `<tr><td>${fdt(m.fecha_hora)}</td>${T ? `<td>${esc(m.sede_codigo)}</td>` : ''}<td>${esc(IDX.prod.get(m.producto_id)?.nombre)}</td><td>${esc(IDX.vari.get(m.variante_id)?.color)}</td><td class="n">${int(m.cantidad)}</td><td class="n">${money(num(m.cantidad) * num(m.precio_fabricante_unit))}</td></tr>`).join('')}
+      <tr class="tot"><td colspan="${T ? 4 : 3}">Total devuelto (no se paga: regresa a Alika)</td><td class="n">${int(sum(devs, m => m.cantidad))}</td><td class="n">${money(sum(devs, m => num(m.cantidad) * num(m.precio_fabricante_unit)))}</td></tr></tbody></table>` : '<p style="font-size:9pt">Sin devoluciones en este corte.</p>';
+    return {titulo:'Comprobante de corte con Alika', sede:c.sede_codigo, sub:`Ventas liquidadas: ${int(c.piezas)} pieza(s) · Venta al público ${money(c.venta_total)} · A pagar a Alika <b>${money(c.total_a_pagar_fabricante)}</b>${porSede ? '<br>' + porSede : ''}${c.nota ? '<br>Nota: ' + esc(c.nota) : ''}`,
+      pre, cols, rows, extra: devHTML + `<p style="font-size:9pt;margin-top:10px">Recibí de conformidad la cantidad de <b>${money(c.total_a_pagar_fabricante)} MXN</b> por las piezas vendidas en consignación detalladas arriba.</p>
+      <div class="firmas"><div>Recibe el pago · Alika (Fabiola)</div><div>Entrega el pago · ${esc(S.config.responsable || 'Responsable')}</div></div>`};
+  },
 };
+/* versiones consolidadas (columnas por ciudad y total) cuando la sede es "Todas" */
+const REP_CONS = {
+  inventario(f){
+    const items = [];
+    const vs = S.variantes.map(v => ({v, p:IDX.prod.get(v.producto_id)})).filter(x => x.p && (!f.cat || x.p.categoria === f.cat) && (!f.solo || stockOf(x.v.id, TODAS).total > 0))
+      .sort((a,b) => a.p.categoria.localeCompare(b.p.categoria) || a.p.nombre.localeCompare(b.p.nombre) || a.v.color.localeCompare(b.v.color));
+    for (const x of vs) for (const sd of sedesCodigos()) items.push({...x, sede_codigo:sd, q:stockOf(x.v.id, sd).total});
+    const t = tablaPorSede(items, {keyFn:x => x.v.id, keyCells:x => [x.p.clave, x.p.nombre, x.v.color], keyCols:[{t:'Clave'},{t:'Producto'},{t:'Color'}],
+      metrics:[{t:'Pzs', f:'int', val:x => x.q}, {t:'Valor', f:'money', val:x => x.q * num(x.p.precio_fabricante)}], totalLabel:'TOTAL GENERAL'});
+    if (!f.solo){ /* incluir también variantes sin existencia */ }
+    return {titulo:'Inventario actual (consolidado)', sub:subFiltro(f) + ' · Valor = a precio de fabricante (consignación).', ...t};
+  },
+  conteo(f){
+    const items = [];
+    const vs = S.variantes.map(v => ({v, p:IDX.prod.get(v.producto_id)})).filter(x => x.p && x.p.activo !== false && (!f.cat || x.p.categoria === f.cat))
+      .sort((a,b) => a.p.categoria.localeCompare(b.p.categoria) || a.p.nombre.localeCompare(b.p.nombre) || a.v.color.localeCompare(b.v.color));
+    const sc = sedesCodigos();
+    const cols = [{t:'Clave'},{t:'Producto'},{t:'Color'}, ...sc.map(c => ({t:'Sistema ' + c, f:'int'})), {t:'Físico'}, {t:'Diferencia'}];
+    const rows = vs.map(({v,p}) => ({c:[p.clave, p.nombre, v.color, ...sc.map(c => stockOf(v.id, c).total), '', '']}));
+    rows.push({c:['TOTAL','','', ...sc.map(c => sum(vs, x => stockOf(x.v.id, c).total)), '', ''], cls:'tot'});
+    return {titulo:'Hoja de conteo físico (todas las sedes)', sub:subFiltro(f), cols, rows, extra:`<div class="firmas"><div>Contó</div><div>Revisó</div></div>`};
+  },
+  ventasDia(f){
+    const movs = filtroVentas(f).sort((a,b) => a.fecha_hora.localeCompare(b.fecha_hora));
+    const t = tablaPorSede(movs, {keyFn:m => dayOf(m.fecha_hora), keyCells:m => [fdate(dayOf(m.fecha_hora))], keyCols:[{t:'Día'}],
+      metrics:[{t:'Pzs', f:'int', val:vendidas}, {t:'Venta', f:'money', val:ventaLinea}, {t:'Margen', f:'money', val:m => ventaLinea(m) - fabLinea(m)}]});
+    return {titulo:'Ventas por día (consolidado)', sub:subFiltro(f), ...t};
+  },
+  ventasProducto(f){
+    const movs = filtroVentas(f).filter(m => !f.cat || IDX.prod.get(m.producto_id)?.categoria === f.cat);
+    const orden = new Map(topProductos(movs).map((x, i) => [x.p?.id, i]));
+    movs.sort((a,b) => (orden.get(a.producto_id) ?? 0) - (orden.get(b.producto_id) ?? 0));
+    const t = tablaPorSede(movs, {keyFn:m => m.producto_id, keyCells:m => { const p = IDX.prod.get(m.producto_id); return [p?.clave, p?.nombre]; }, keyCols:[{t:'Clave'},{t:'Producto'}],
+      metrics:[{t:'Pzs', f:'int', val:vendidas}, {t:'Venta', f:'money', val:ventaLinea}, {t:'A Fabiola', f:'money', val:fabLinea}]});
+    return {titulo:'Ventas por producto (consolidado)', sub:subFiltro(f), ...t};
+  },
+  gastosCategoria(f){
+    const gs = S.gastos.filter(g => (!f.ev || g.evento_id === f.ev) && (!f.desde || g.fecha >= f.desde) && (!f.hasta || g.fecha <= f.hasta));
+    const t = tablaPorSede(gs, {keyFn:g => g.categoria, keyCells:g => [g.categoria], keyCols:[{t:'Categoría'}], metrics:[{t:'Monto', f:'money', val:g => g.monto}]});
+    return {titulo:'Gastos por categoría (consolidado)', sub:subFiltro(f) + ' · Las comisiones de tarjeta se ven en el estado de resultados.', ...t};
+  },
+  resultados(f){
+    if (f.ev) return REP1.resultados(f);
+    const t = estadoConsolidado(f);
+    return {titulo:'Estado de resultados (consolidado)', sub:'Todas las sedes' + (f.desde || f.hasta ? ` · ${fdate(f.desde) || 'inicio'} a ${fdate(f.hasta) || 'hoy'}` : ''), cols:t.cols, rows:t.rows,
+      extra:`<p style="font-size:9pt">Piezas vendidas: ${t.all.map((r, i) => (i < t.all.length - 1 ? sedesCodigos()[i] : 'Total') + ' ' + int(r.piezas)).join(' · ')}</p>`};
+  },
+  pendienteAlika(f){
+    const movs = filtroVentas(f).filter(m => !m.corte_id).sort((a,b) => String(IDX.prod.get(a.producto_id)?.nombre).localeCompare(String(IDX.prod.get(b.producto_id)?.nombre)));
+    const t = tablaPorSede(movs, {keyFn:m => m.variante_id + '|' + m.precio_fabricante_unit, keyCells:m => [IDX.prod.get(m.producto_id)?.nombre, IDX.vari.get(m.variante_id)?.color, m.precio_fabricante_unit], keyCols:[{t:'Producto'},{t:'Color'},{t:'Precio fab.', f:'money'}],
+      metrics:[{t:'Pzs', f:'int', val:vendidas}, {t:'A pagar', f:'money', val:fabLinea}], totalLabel:'TOTAL A PAGAR A ALIKA'});
+    return {titulo:'Ventas pendientes de pagar a Alika (consolidado)', sub:subFiltro(f) + ' · Ventas que todavía no están en un corte.', ...t,
+      extra:`<div class="firmas"><div>Alika (Fabiola)</div><div>${esc(S.config.responsable || 'Responsable')}</div></div>`};
+  },
+};
+const REP = {};
+for (const k of Object.keys(REP1)) REP[k] = f => { f = {...f, sede: f.sede || vista()}; const r = (f.sede === TODAS && REP_CONS[k]) ? REP_CONS[k](f) : REP1[k](f); if (!r.sede) r.sede = f.sede; return r; };
 const REP_FILTROS = {inventario:['cat','solo'], conteo:['cat'], kardex:['prod'], ventasDia:['ev','fechas'], ventasEvento:['fechas'], ventasProducto:['ev','fechas','cat'], ventasDetalle:['ev','fechas'],
-  gastosEvento:['ev','fechas'], gastosCategoria:['ev','fechas'], resultados:['ev','fechas'], pendienteAlika:['ev','fechas'], consumo:['ev','fechas']};
+  gastosEvento:['ev','fechas'], gastosCategoria:['ev','fechas'], resultados:['ev','fechas'], pendienteAlika:['ev','fechas'], consumo:['ev','fechas'], cortesLista:['fechas'], corte:[]};
 function abrirReporte(k, f0 = {}){
-  const f = {ev:'', desde:'', hasta:'', cat:'', solo:false, ...f0};
+  const f = {ev:'', desde:'', hasta:'', cat:'', solo:false, sede:vista(), ...f0};
   const fl = REP_FILTROS[k] || [];
   const m = modal(`${mhead(REPORTES.find(r => r[0] === k)?.[2] || 'Reporte')}
     <div class="grid g4" style="margin-bottom:10px">
-      ${fl.includes('ev') ? `<label class="f">Evento<select id="rfe">${eventosOpts(f.ev, {todos:'Todos'})}</select></label>` : ''}
+      ${k !== 'corte' ? `<label class="f">Sede<select id="rfsede">${sedes().map(x => opt(x.codigo, x.nombre, f.sede)).join('')}${opt(TODAS, 'Consolidado (todas)', f.sede)}</select></label>` : ''}
+      ${fl.includes('ev') ? `<label class="f">Evento<select id="rfe">${eventosOpts(f.ev, {todos:'Todos', sede:TODAS})}</select></label>` : ''}
       ${fl.includes('fechas') ? `<label class="f">Desde<input type="date" id="rfd" value="${f.desde}"></label><label class="f">Hasta<input type="date" id="rfh" value="${f.hasta}"></label>` : ''}
       ${fl.includes('cat') ? `<label class="f">Categoría<select id="rfc">${opt('', 'Todas', f.cat)}${catsEnUso().map(c => opt(c, c, f.cat)).join('')}</select></label>` : ''}
       ${fl.includes('solo') ? `<label class="chk"><input type="checkbox" id="rfs"> Solo con existencia</label>` : ''}
@@ -1849,12 +2145,80 @@ function abrirReporte(k, f0 = {}){
   let rep;
   const draw = () => { rep = REP[k](f); $('#rprev', m).innerHTML = repHTML(rep); };
   const bind = (id, key, ev = 'onchange', get = e => e.target.value) => { const el = $(id, m); if (el) el[ev] = e => { f[key] = get(e); draw(); }; };
-  bind('#rfe', 'ev'); bind('#rfd', 'desde'); bind('#rfh', 'hasta'); bind('#rfc', 'cat'); bind('#rfs', 'solo', 'onchange', e => e.target.checked);
+  bind('#rfsede', 'sede'); bind('#rfe', 'ev'); bind('#rfd', 'desde'); bind('#rfh', 'hasta'); bind('#rfc', 'cat'); bind('#rfs', 'solo', 'onchange', e => e.target.checked);
   if ($('#rfp', m)) $('#rfp', m).onclick = async () => { const vid = await pickVariante({titulo:'¿De qué producto?'}); if (vid){ const todos = await confirmDlg({titulo:'¿Qué colores?', msg:'¿Quieres el kárdex de todos los colores de este producto o solo del color elegido?', ok:'Todos los colores', cancel:'Solo ese color'}); if (todos){ f.pid = IDX.vari.get(vid).producto_id; f.vid = null; } else { f.vid = vid; f.pid = null; } draw(); } };
   $('#rprint', m).onclick = () => { $('#print').innerHTML = repHTML(rep); window.print(); };
-  $('#rcsv', m).onclick = () => download(`ALIKA_${S.config.sede_codigo}_${k}_${localDate()}.csv`, repCSV(rep), 'text/csv;charset=utf-8');
+  $('#rcsv', m).onclick = () => download(`ALIKA_${rep.sede || f.sede}_${k}_${localDate()}.csv`, repCSV(rep), 'text/csv;charset=utf-8');
   draw();
 }
+
+/* =========================================================================
+   CORTES CON ALIKA
+   ========================================================================= */
+SCREENS.cortes = () => {
+  const sede = vista(); const pend = pendientesCorte(sede, '', '');
+  const cs = S.cortes.filter(c => sede === TODAS || c.sede_codigo === sede || c.sede_codigo === TODAS).sort((a,b) => b.fecha_corte.localeCompare(a.fecha_corte));
+  const porPagar = cs.filter(c => c.estado !== 'Pagado');
+  return `${topbar('Cortes con Alika')}
+  <div class="alert info">El corte junta las ventas que todavía no se le han pagado a Alika (más las devoluciones) y calcula cuánto se le paga a Fabiola: siempre el <b>precio de fabricante</b>. Las ventas que entran a un corte quedan <b>bloqueadas</b>: ya no se pueden borrar.</div>
+  <div class="grid g4">
+    <div class="kpi"><div class="l">Ventas sin corte</div><div class="v">${int(sum(pend.ventas, vendidas))} pzs</div><div class="s">${esc(sede === TODAS ? 'todas las sedes' : sedeNombre(sede))}</div></div>
+    <div class="kpi"><div class="l">Por liquidar (sin corte)</div><div class="v">${money(sum(pend.ventas, fabLinea))}</div><div class="s">a precio de fabricante</div></div>
+    <div class="kpi"><div class="l">Devoluciones sin corte</div><div class="v">${int(sum(pend.devoluciones, m => m.cantidad))} pzs</div></div>
+    <div class="kpi"><div class="l">Cortes por pagar</div><div class="v">${money(sum(porPagar, c => c.total_a_pagar_fabricante))}</div><div class="s">${porPagar.length} corte(s) pendiente(s)</div></div>
+  </div>
+  <div class="row" style="margin:14px 0"><button class="btn pri big" data-a="nuevoCorte">🤝 Generar corte${sede === TODAS ? ' en conjunto' : ' de ' + esc(sedeNombre(sede))}</button><button class="btn ghost" data-a="rep" data-r="cortesLista">🖨️ Lista de cortes</button></div>
+  <div class="card"><h2>Cortes</h2>${cs.length ? `<div class="tw"><table class="t"><thead><tr><th>Folio</th><th>Sede</th><th>Fecha</th><th>Periodo</th><th class="n">Piezas</th><th class="n">A pagar</th><th class="n">Devueltas</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${cs.map(c => `<tr><td class="b">${esc(c.folio || '')}</td><td>${sedeTag(c.sede_codigo)}</td><td class="small">${fdt(c.fecha_corte)}</td><td class="small">${fdate(c.periodo_desde) || 'inicio'} a ${fdate(c.periodo_hasta) || '—'}</td><td class="n">${int(c.piezas)}</td><td class="n b">${money(c.total_a_pagar_fabricante)}</td><td class="n">${int(c.piezas_devueltas)}</td>
+      <td><span class="pill ${c.estado === 'Pagado' ? 'ok' : 'warn'}">${esc(c.estado)}</span>${c.fecha_pago ? `<div class="small muted">${fdate(c.fecha_pago)}${c.referencia ? ' · ' + esc(c.referencia) : ''}</div>` : ''}</td>
+      <td class="right"><button class="btn sm ghost" data-a="verCorte" data-c="${c.id}">🧾 Comprobante</button>${c.estado !== 'Pagado' ? ` <button class="btn sm pri" data-a="pagarCorte" data-c="${c.id}">✅ Pagado</button> <button class="btn sm ghost" data-a="cancelarCorte" data-c="${c.id}">✕</button>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">Todavía no hay cortes.</div>'}</div>`;
+};
+A.nuevoCorte = () => {
+  const alcOpts = esTodas() ? [TODAS] : [vista(), TODAS];
+  const st = {alcance:alcOpts[0], desde:'', hasta:localDate(), nota:''};
+  const m = modal(`${mhead('🤝 Generar corte con Alika')}<div id="ncb"></div>`, {wide:true});
+  const draw = () => {
+    const p = pendientesCorte(st.alcance, st.desde, st.hasta);
+    const sc = sedesCodigos();
+    $('#ncb', m).innerHTML = `<div class="grid g3">
+      <label class="f">Sede<select id="nca">${alcOpts.map(a => opt(a, a === TODAS ? 'En conjunto (todas las sedes)' : sedeNombre(a), st.alcance)).join('')}</select></label>
+      <label class="f">Desde (vacío = todo lo pendiente)<input type="date" id="ncd" value="${st.desde}"></label>
+      <label class="f">Hasta<input type="date" id="nch" value="${st.hasta}"></label></div>
+      <label class="f" style="margin-top:8px">Nota (opcional)<input type="text" id="ncn" value="${esc(st.nota)}"></label>
+      <div class="tw" style="margin-top:12px"><table class="t"><thead><tr><th></th>${st.alcance === TODAS ? sc.map(c => `<th class="n">${sedeTag(c)}</th>`).join('') + '<th class="n">Total</th>' : '<th class="n">Total</th>'}</tr></thead><tbody>
+        ${[['Piezas vendidas', p.ventas, vendidas, int], ['Venta al público', p.ventas, ventaLinea, money], ['A pagar a Alika (fabricante)', p.ventas, fabLinea, money], ['Piezas devueltas', p.devoluciones, x => x.cantidad, int]].map(([t, arr, fn, fm]) =>
+          `<tr><td>${t}</td>${st.alcance === TODAS ? sc.map(c => `<td class="n">${fm(sum(arr.filter(x => x.sede_codigo === c), fn))}</td>`).join('') : ''}<td class="n b">${fm(sum(arr, fn))}</td></tr>`).join('')}
+      </tbody></table></div>
+      ${!p.ventas.length && !p.devoluciones.length ? '<div class="alert warn">No hay ventas ni devoluciones pendientes en ese periodo.</div>' : ''}
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn pri big" id="ncok" ${p.ventas.length || p.devoluciones.length ? '' : 'disabled'}>Generar corte</button></div>`;
+    $('#nca', m).onchange = e => { st.alcance = e.target.value; draw(); };
+    $('#ncd', m).onchange = e => { st.desde = e.target.value; draw(); };
+    $('#nch', m).onchange = e => { st.hasta = e.target.value; draw(); };
+    $('#ncn', m).oninput = e => { st.nota = e.target.value; };
+    $('#ncok', m).onclick = async () => {
+      if (!await confirmDlg({titulo:'¿Generar el corte?', msg:'Las ventas y devoluciones incluidas quedarán <b>bloqueadas</b> (ya no se podrán borrar). Mientras el corte esté "Pendiente" lo puedes cancelar.', ok:'Sí, generar'})) return;
+      try { const c = await generarCorte(st);
+        closeModal(); toast(`✅ Corte ${c.folio}: ${money(c.total_a_pagar_fabricante)}`); rerender(); abrirReporte('corte', {corte_id:c.id}); }
+      catch (e){ alertDlg('No se pudo generar', esc(e.message)); }
+    };
+  };
+  draw();
+};
+A.verCorte = el => abrirReporte('corte', {corte_id:el.dataset.c});
+A.pagarCorte = el => {
+  const c = S.cortes.find(x => x.id === el.dataset.c);
+  const m = modal(`${mhead('✅ Marcar corte como pagado')}<div class="stack"><div>Corte <b>${esc(c.folio || '')}</b> · ${esc(c.sede_codigo === TODAS ? 'Conjunto' : sedeNombre(c.sede_codigo))} · <b>${money(c.total_a_pagar_fabricante)}</b></div>
+    <label class="f">Fecha de pago<input type="date" id="pgf" value="${localDate()}"></label>
+    <label class="f">Referencia (transferencia, efectivo…)<input type="text" id="pgr" placeholder="Ej. Transferencia BBVA 1234"></label>
+    <div class="row" style="justify-content:flex-end"><button class="btn pri big" id="pgok">Guardar pago</button></div></div>`);
+  $('#pgok', m).onclick = async () => { await pagarCorte(c.id, val('#pgf', m) || localDate(), val('#pgr', m).trim()); closeModal(); toast('✅ Corte pagado: las ventas quedan liquidadas'); rerender(); };
+};
+A.cancelarCorte = async el => {
+  const c = S.cortes.find(x => x.id === el.dataset.c);
+  if (!await confirmDlg({titulo:'¿Cancelar el corte?', msg:`El corte ${esc(c.folio || '')} se borra y sus ventas y devoluciones vuelven a quedar pendientes (se pueden incluir en otro corte).`, ok:'Sí, cancelar corte', danger:true})) return;
+  try { await cancelarCorte(c.id); toast('Corte cancelado'); rerender(); } catch (e){ alertDlg('No se pudo', esc(e.message)); }
+};
 
 /* =========================================================================
    RESPALDO
@@ -1865,25 +2229,31 @@ SCREENS.respaldo = () => {
   <div class="alert warn">⚠️ Los datos viven en el navegador de <b>este equipo</b>. Si se borra el historial o se cambia de equipo, solo se recuperan con el archivo de respaldo.</div>
   <div class="grid g2">
     <div class="card"><h2>💾 Guardar respaldo</h2><p>Último respaldo: <b>${hace(S.config.ultimo_respaldo)}</b>${S.config.ultimo_respaldo ? ` (${fdt(S.config.ultimo_respaldo)})` : ''}</p>
-      <p class="small muted">Se descarga el archivo <b>${nombreRespaldo()}</b> con toda la información (${int(n)} registros).</p>
+      <p class="small muted">Se descarga el archivo <b>${nombreRespaldo()}</b> con <b>todas las sedes</b> (${int(n)} registros).</p>
       <div class="row"><button class="btn pri big" data-a="guardarResp">💾 Guardar respaldo</button>
-      ${navigator.canShare ? '<button class="btn acc big" data-a="compartirResp">📤 Compartir (WhatsApp, Drive…)</button>' : ''}</div></div>
+      ${navigator.canShare ? '<button class="btn acc big" data-a="compartirResp">📤 Compartir (WhatsApp, Drive…)</button>' : ''}</div>
+      <h3 style="margin-top:16px">Respaldo solo de una sede</h3><p class="small muted">Catálogo completo + movimientos, eventos, gastos y cortes de esa sede. Sirve para el día que Mérida tenga su propia tablet.</p>
+      <div class="row">${sedes().map(x => `<button class="btn ghost" data-a="respSede" data-v="${esc(x.codigo)}">${sedeTag(x.codigo)} ${esc(x.nombre)}</button>`).join('')}</div></div>
     <div class="card"><h2>📂 Cargar respaldo</h2><p class="small muted">Para pasar la información de otro equipo (ej. de la tablet a la laptop).</p>
       <label class="btn ghost big">📂 Elegir archivo .json<input type="file" accept=".json,application/json" data-c="cargarResp" hidden></label></div>
-    <div class="card"><h2>📄 Exportar todo a CSV</h2><p class="small muted">Un archivo por tabla (productos, variantes, movimientos, eventos, gastos) para abrir en Excel.</p>
+    <div class="card"><h2>📄 Exportar todo a CSV</h2><p class="small muted">Un archivo por tabla (productos, variantes, movimientos, eventos, gastos, cortes) con columnas por sede, para abrir en Excel.</p>
       <button class="btn ghost" data-a="csvTodo">📄 Exportar CSV</button></div>
     <div class="card"><h2>🔒 Almacenamiento</h2><div id="persist" class="small muted">Revisando…</div></div>
+    <div class="card" id="premig" style="display:none"><h2>🕓 Respaldo previo a la actualización</h2><p class="small muted">Copia automática de tus datos tal como estaban antes de pasar a la versión con varias sedes.</p><button class="btn ghost" data-a="descPremig">⬇️ Descargar respaldo previo</button></div>
   </div>`;
 };
 SCREENS.respaldo_after = async () => {
   const el = $('#persist'); if (!el) return;
+  try { if (await respaldoPremigracion()) $('#premig').style.display = ''; } catch(e){}
   try { const p = navigator.storage?.persisted ? await navigator.storage.persisted() : false; const est = navigator.storage?.estimate ? await navigator.storage.estimate() : null;
     el.innerHTML = `${p ? '✅ El navegador marcó estos datos como <b>persistentes</b> (no los borra solo).' : '⚠️ El navegador no garantizó el almacenamiento persistente. Respalda seguido.'}${est ? `<br>Uso: ${(est.usage / 1048576).toFixed(2)} MB` : ''}<br>Protocolo: ${location.protocol === 'file:' ? 'archivo local (USB / disco)' : location.origin}`;
   } catch(e){ el.textContent = 'No disponible en este navegador.'; }
 };
 A.guardarResp = async () => { await guardarRespaldo(false); toast('✅ Respaldo descargado'); rerender(); };
+A.respSede = async el => { await guardarRespaldo(false, el.dataset.v); toast(`✅ Respaldo de ${esc(sedeNombre(el.dataset.v))} descargado`); };
+A.descPremig = async () => { const r = await respaldoPremigracion(); if (r) download(`ALIKA_ANTES_DE_MIGRAR_v1_${dayOf(r.fecha)}.json`, r.json, 'application/json'); };
 A.compartirResp = async () => { const ok = await guardarRespaldo(true); if (ok){ toast('✅ Respaldo listo'); rerender(); } };
-A.csvTodo = () => { const t = tablasCSV(); let i = 0; for (const [k, rows] of Object.entries(t)) setTimeout(() => download(`ALIKA_${S.config.sede_codigo}_${k}_${localDate()}.csv`, toCSV(rows), 'text/csv;charset=utf-8'), 400 * i++); toast('Descargando 5 archivos CSV…'); };
+A.csvTodo = () => { const t = tablasCSV(); let i = 0; for (const [k, rows] of Object.entries(t)) setTimeout(() => download(`ALIKA_TODAS_${k}_${localDate()}.csv`, toCSV(rows), 'text/csv;charset=utf-8'), 400 * i++); toast(`Descargando ${Object.keys(t).length} archivos CSV…`); };
 C.cargarResp = async el => {
   const f = el.files[0]; el.value = ''; if (!f) return;
   let o;
@@ -1891,9 +2261,10 @@ C.cargarResp = async el => {
   catch (e){ alertDlg('❌ No se pudo cargar', `${esc(e.message || 'El archivo está dañado.')}<br><br>Tus datos actuales <b>no se tocaron</b>.`); return; }
   const cnt = s => (o.data[s] || []).length;
   const m = modal(`${mhead('📂 Cargar respaldo')}<div class="stack">
-    <div class="card" style="background:#faf8f5"><b>${esc(f.name)}</b><div class="small">Sede: ${esc(o.sede_nombre || '')} (${esc(o.sede_codigo || '')}) · Generado: ${fdt(o.generado)} · Esquema v${esc(o.version_esquema)}</div>
-    <div class="small">${cnt('productos')} productos · ${cnt('variantes')} variantes · ${cnt('movimientos')} movimientos · ${cnt('eventos')} eventos · ${cnt('gastos')} gastos</div></div>
-    ${o.sede_codigo && o.sede_codigo !== S.config.sede_codigo ? `<div class="alert warn">Este respaldo es de otra sede (${esc(o.sede_codigo)}). "Fusionar" sirve para consolidar sedes.</div>` : ''}
+    <div class="card" style="background:#faf8f5"><b>${esc(f.name)}</b><div class="small">${num(o.version_esquema) < 2 ? `Versión anterior (una sede: ${esc(o.sede_nombre || o.sede_codigo || '')})` : `Contiene: ${o.alcance === TODAS || !o.alcance ? 'todas las sedes' : 'solo ' + esc(sedeNombre(o.alcance))}`} · Generado: ${fdt(o.generado)} · Esquema v${esc(o.version_esquema)}</div>
+    <div class="small">${cnt('productos')} productos · ${cnt('variantes')} variantes · ${cnt('movimientos')} movimientos · ${cnt('eventos')} eventos · ${cnt('gastos')} gastos · ${cnt('cortes')} cortes</div></div>
+    ${num(o.version_esquema) < 2 ? '<div class="alert info">Es un respaldo de la versión anterior: al cargarlo, todos sus registros quedan asignados a <b>Querétaro (QRO)</b> automáticamente.</div>' : ''}
+    ${o.alcance && o.alcance !== TODAS ? `<div class="alert warn">Este respaldo trae solo la sede ${esc(sedeNombre(o.alcance))}. "Reemplazar todo" dejaría este equipo solo con esa sede; para juntarla con lo que ya tienes usa "Fusionar".</div>` : ''}
     <div class="grid g2">
       <div class="card"><h3>🔁 Reemplazar todo</h3><p class="small">Borra lo de este equipo y deja exactamente lo del respaldo. Antes se descarga automáticamente un respaldo de lo actual.</p><button class="btn bad" id="rrep">Reemplazar todo</button></div>
       <div class="card"><h3>➕ Fusionar</h3><p class="small">Une ambos sin duplicar (por ID único). Si un registro está en los dos, gana el más reciente.</p><button class="btn pri" id="rfus">Fusionar</button></div>
@@ -1901,11 +2272,11 @@ C.cargarResp = async el => {
   $('#rrep', m).onclick = async () => {
     if (!await confirmDlg({titulo:'¿Reemplazar todo?', msg:'Se descargará primero un respaldo de lo que hay ahora en este equipo y luego se reemplazará con el archivo elegido.', ok:'Sí, reemplazar', danger:true})) return;
     if (S.movimientos.length || S.productos.length){ download('ANTES_DE_REEMPLAZAR_' + nombreRespaldo(), JSON.stringify(snapshot()), 'application/json'); }
-    try { await cargarRespaldo(o, 'reemplazar'); closeAll(); await alertDlg('✅ Respaldo cargado', 'Se reemplazó la información con la del respaldo.'); render(); }
+    try { const r = await cargarRespaldo(o, 'reemplazar'); aplicarSedeVisual(); closeAll(); await alertDlg('✅ Respaldo cargado', 'Se reemplazó la información con la del respaldo.' + (r.migrado ? '<br>Venía de la versión anterior: quedó asignado a Querétaro (QRO).' : '')); render(); }
     catch (e){ alertDlg('❌ Error', esc(e.message) + '<br>Tus datos no se modificaron.'); }
   };
   $('#rfus', m).onclick = async () => {
-    try { const r = await cargarRespaldo(o, 'fusionar'); closeAll(); await alertDlg('✅ Respaldos fusionados', `${r.nuevos} registro(s) nuevos · ${r.actualizados} actualizados · ${r.iguales} sin cambio.`); render(); }
+    try { const r = await cargarRespaldo(o, 'fusionar'); closeAll(); await alertDlg('✅ Respaldos fusionados', `${r.nuevos} registro(s) nuevos · ${r.actualizados} actualizados · ${r.iguales} sin cambio.${r.migrado ? '<br>Venía de la versión anterior: sus registros quedaron en Querétaro (QRO).' : ''}`); render(); }
     catch (e){ alertDlg('❌ Error', esc(e.message)); }
   };
 };
@@ -1916,9 +2287,11 @@ C.cargarResp = async el => {
 SCREENS.config = () => {
   const c = S.config;
   return `${topbar('Configuración')}
+  <div class="card"><h2>📍 Sedes</h2><div class="small muted" style="margin-bottom:8px">Cada sede tiene su color en la barra superior para no registrar en la ciudad equivocada. El código no se puede cambiar.</div>
+    <div class="grid g2">${sedes().map(x => `<div class="row"><span class="sedetag" style="--c:${esc(x.color)};font-size:1rem;padding:6px 10px">${esc(x.codigo)}</span>
+      <label class="f" style="flex:1">Nombre<input type="text" data-sn="${esc(x.codigo)}" value="${esc(x.nombre)}"></label>
+      <label class="f">Color<input type="color" data-sc="${esc(x.codigo)}" value="${esc(x.color)}" style="width:64px;height:52px;border:0;background:none"></label></div>`).join('')}</div></div>
   <div class="card"><div class="grid g2">
-    <label class="f">Código de sede<input type="text" id="cf_sc" value="${esc(c.sede_codigo)}" maxlength="5"></label>
-    <label class="f">Nombre de la sede<input type="text" id="cf_sn" value="${esc(c.sede_nombre)}"></label>
     <label class="f">Responsable (quien opera)<input type="text" id="cf_re" value="${esc(c.responsable)}"></label>
     <label class="f">Factor de precio sugerido (sugerido = fabricante × factor)<input type="number" inputmode="decimal" step="0.1" id="cf_fa" value="${c.factor_precio_sugerido}"></label>
     <label class="f">Comisión de tarjeta %<input type="number" inputmode="decimal" step="0.01" id="cf_co" value="${c.comision_tarjeta_pct}"></label>
@@ -1933,10 +2306,10 @@ SCREENS.config = () => {
     <button class="btn bad" data-a="borrarTodo">🗑️ Borrar todos los datos</button></div>`;
 };
 A.guardarCfg = async () => {
-  const sc = cleanTxt(val('#cf_sc')).replace(/\s/g, '') || 'QRO';
-  await saveConfig({sede_codigo:sc, sede_nombre:val('#cf_sn').trim() || sc, responsable:val('#cf_re').trim(), factor_precio_sugerido:num(val('#cf_fa')) || 2,
+  const ss = sedes().map(x => ({...x, nombre: ($(`[data-sn="${x.codigo}"]`)?.value || '').trim() || x.nombre, color: $(`[data-sc="${x.codigo}"]`)?.value || x.color}));
+  await saveConfig({sedes:ss, responsable:val('#cf_re').trim(), factor_precio_sugerido:num(val('#cf_fa')) || 2,
     comision_tarjeta_pct:num(val('#cf_co')), umbral_existencia_baja:num(val('#cf_um')), personas:val('#cf_pe').split(',').map(s => s.trim()).filter(Boolean)});
-  toast('✅ Configuración guardada'); render();
+  aplicarSedeVisual(); toast('✅ Configuración guardada'); render();
 };
 A.borrarTodo = async () => {
   if (!await confirmDlg({titulo:'¿Borrar TODOS los datos?', msg:'Esto no se puede deshacer. ¿Ya guardaste un respaldo?', ok:'Sí, ya respaldé', cancel:'No, cancelar', danger:true})) return;
@@ -1952,12 +2325,18 @@ async function init(){
   catch (e){ $('#main').innerHTML = `<div class="card alert bad"><h2>No se pudo abrir el almacenamiento</h2><p>${esc(e.message || e)}</p><p>Si abriste el archivo en Chrome para Android desde la memoria/USB, usa la versión publicada (ver LEEME). En laptop, usa Chrome o Edge.</p></div>`; return; }
   try { if (navigator.storage && navigator.storage.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch(e){}
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+  let mig = null;
+  try { mig = await migrarLocal(); }
+  catch (e){ $('#main').innerHTML = `<div class="card alert bad"><h2>No se pudo actualizar los datos</h2><p>${esc(e.message || e)}</p><p>Tus datos no se modificaron. Guarda un respaldo con la versión anterior y avísanos.</p></div>`; return; }
+  aplicarSedeVisual();
   render();
+  if (mig && mig.hayDatos) alertDlg('✅ App actualizada: varias sedes', `Ahora este equipo puede manejar <b>Querétaro</b> y <b>Mérida</b>. Todos tus datos (${int(mig.registros)} registros) quedaron asignados a <b>Querétaro (QRO)</b>, sin perder nada.<br><br>Antes de actualizar se guardó un respaldo automático${mig.archivo ? ` (<b>${esc(mig.archivo)}</b>, en Descargas)` : ''}; también lo puedes bajar en <b>Respaldo → Respaldo previo a la actualización</b>.<br><br>Usa el selector de arriba para cambiar de sede.`);
   const tieneDatos = S.movimientos.length || S.gastos.length; const ult = S.config.ultimo_respaldo;
   if (tieneDatos && (!ult || Date.now() - new Date(ult) > 24*3600000)) setTimeout(() => toast(`💾 Último respaldo: ${hace(ult)}. Te recomendamos respaldar.`, {accion:'Respaldar', ms:8000, fn:() => A.respaldoRapido()}), 800);
 }
 /* expone funciones para pruebas */
-window.ALIKA = {S, IDX, readXlsx, parseCSV, analizarImport, aplicarImport, leerPrecios, leerCasa, guessHeaderRow, guessMapping, resultados, inventarioTotales, stockOf, calcular, snapshot, cargarRespaldo, validarRespaldo, put, del, clearAll, kardexRows, REP};
+window.ALIKA = {S, IDX, readXlsx, parseCSV, analizarImport, aplicarImport, leerPrecios, leerCasa, guessHeaderRow, guessMapping, resultados, inventarioTotales, stockOf, calcular, snapshot, cargarRespaldo, validarRespaldo, put, del, clearAll, kardexRows, REP, REP1,
+  migrarSnapshot, migrarLocal, generarCorte, pagarCorte, cancelarCorte, pendientesCorte, saveConfig, sedesCodigos, vista, loadAll, respaldoPremigracion};
 init();
 </script>
 </body>
